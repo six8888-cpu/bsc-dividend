@@ -134,11 +134,12 @@ INTERVAL_SECONDS = 5 * 60  # 每轮间隔 5 分钟
 # 实时进度状态
 current_progress = {
     'running': False,
-    'phase': 'idle',  # idle, dividend, buyback
+    'phase': 'idle',  # idle, dividend, buyback, done
     'step': '',
     'current': 0,
     'total': 0,
-    'logs': [],  # 实时日志
+    'dividend_logs': [],  # 分红日志
+    'buyback_logs': [],   # 回购日志
     'started_at': 0,
     'updated_at': 0
 }
@@ -158,12 +159,17 @@ def update_progress(phase=None, step=None, current=None, total=None, log=None, r
         if total is not None:
             current_progress['total'] = total
         if log is not None:
-            current_progress['logs'].append({
+            log_entry = {
                 'time': int(time.time()),
                 'msg': log
-            })
-            # 只保留最近20条日志
-            current_progress['logs'] = current_progress['logs'][-20:]
+            }
+            # 根据当前阶段分别存储日志
+            if current_progress['phase'] == 'buyback':
+                current_progress['buyback_logs'].append(log_entry)
+                current_progress['buyback_logs'] = current_progress['buyback_logs'][-20:]
+            else:
+                current_progress['dividend_logs'].append(log_entry)
+                current_progress['dividend_logs'] = current_progress['dividend_logs'][-20:]
         current_progress['updated_at'] = int(time.time())
 
 def reset_progress():
@@ -174,7 +180,8 @@ def reset_progress():
         current_progress['step'] = ''
         current_progress['current'] = 0
         current_progress['total'] = 0
-        current_progress['logs'] = []
+        current_progress['dividend_logs'] = []
+        current_progress['buyback_logs'] = []
         current_progress['started_at'] = 0
         current_progress['updated_at'] = int(time.time())
 
@@ -560,9 +567,10 @@ def execute_lottery():
     logger.info("=" * 50)
     
     # 初始化进度
-    update_progress(running=True, phase='init', step='初始化...', current=0, total=100, log='开始执行新一轮分红')
+    update_progress(running=True, phase='init', step='初始化...', current=0, total=100, log='开始执行新一轮')
     current_progress['started_at'] = int(time.time())
-    current_progress['logs'] = []
+    current_progress['dividend_logs'] = []
+    current_progress['buyback_logs'] = []
     
     try:
         config = load_config()
@@ -627,31 +635,7 @@ def execute_lottery():
             update_progress(log='错误: 无法获取持仓者')
             return None
         
-        # ========== 第一步：回购销毁 ==========
-        buyback_result = None
-        if buyback_amount >= 0.001:  # 最小回购金额
-            update_progress(
-                phase='buyback',
-                step='执行回购销毁...',
-                current=0,
-                total=2,
-                log=f'开始回购销毁: {buyback_amount:.6f} BNB'
-            )
-            logger.info(f"  执行回购销毁: {buyback_amount:.6f} BNB")
-            
-            buyback_result = buyback_and_burn(config, buyback_amount)
-            if buyback_result:
-                state['buyback'].insert(0, buyback_result)
-                state['buyback'] = state['buyback'][:50]
-                update_progress(current=2, log=f'✓ 回购销毁成功: {buyback_result["amount"]:,.0f} 枚代币')
-                logger.info(f"  回购销毁成功: {buyback_result['amount']:,.0f} 枚")
-            else:
-                update_progress(log='✗ 回购销毁失败')
-                logger.warning("  回购销毁失败")
-        
-        result['buyback'] = buyback_result
-        
-        # ========== 第二步：分红 ==========
+        # ========== 第一步：分红 ==========
         min_dividend = 0.001  # 最小分红金额，低于此不发送（节省gas）
         dividend_results = []
         failed_dividends = []
@@ -665,7 +649,7 @@ def execute_lottery():
             update_progress(
                 phase='dividend', 
                 step='开始分红...', 
-                current=10, 
+                current=0, 
                 total=len(top30),
                 log=f'开始分红: {len(top30)} 人均分 {dividend_amount:.6f} BNB, 每人 {per_person:.6f} BNB'
             )
@@ -708,7 +692,7 @@ def execute_lottery():
                     logger.warning(f"  [{i+1}/{len(top30)}] 发送失败: {holder_addr[:10]}...")
                     update_progress(log=f'✗ {short_addr} 失败')
         
-        # 限制记录数量
+        # 限制分红记录数量
         state['dividend'] = state['dividend'][:100]
         state['failed_dividends'] = state['failed_dividends'][:50]
         
@@ -716,11 +700,41 @@ def execute_lottery():
         result['dividend_total'] = total_sent
         result['failed_count'] = len(failed_dividends)
         
-        summary = f'分红完成: 成功 {len(dividend_results)} 笔，共 {total_sent:.6f} BNB'
+        dividend_summary = f'分红完成: 成功 {len(dividend_results)} 笔，共 {total_sent:.6f} BNB'
         if len(failed_dividends) > 0:
-            summary += f'，失败 {len(failed_dividends)} 笔'
-        logger.info(f"  {summary}")
-        update_progress(phase='done', step='分红完成', current=len(top30), log=summary)
+            dividend_summary += f'，失败 {len(failed_dividends)} 笔'
+        logger.info(f"  {dividend_summary}")
+        update_progress(step='分红完成', current=len(top30), log=dividend_summary)
+        
+        # ========== 第二步：回购销毁 ==========
+        buyback_result = None
+        if buyback_amount >= 0.001:  # 最小回购金额
+            update_progress(
+                phase='buyback',
+                step='执行回购销毁...',
+                current=0,
+                total=2,
+                log=f'开始回购销毁: {buyback_amount:.6f} BNB'
+            )
+            logger.info(f"  执行回购销毁: {buyback_amount:.6f} BNB")
+            
+            buyback_result = buyback_and_burn(config, buyback_amount)
+            if buyback_result:
+                state['buyback'].insert(0, buyback_result)
+                state['buyback'] = state['buyback'][:50]
+                update_progress(current=2, log=f'✓ 回购销毁成功: {buyback_result["amount"]:,.0f} 枚代币')
+                logger.info(f"  回购销毁成功: {buyback_result['amount']:,.0f} 枚")
+            else:
+                update_progress(log='✗ 回购销毁失败')
+                logger.warning("  回购销毁失败")
+        
+        result['buyback'] = buyback_result
+        
+        # ========== 完成 ==========
+        final_summary = f'本轮完成 - 分红: {total_sent:.6f} BNB'
+        if buyback_result:
+            final_summary += f', 销毁: {buyback_result["amount"]:,.0f} 枚'
+        update_progress(phase='done', step='执行完成', log=final_summary)
         
         # 保存状态
         state['last_block'] = get_web3().eth.block_number
@@ -729,7 +743,7 @@ def execute_lottery():
         
         last_execution_time = int(time.time())
         logger.info("本轮执行完成!")
-        update_progress(log='本轮执行完成，等待下一轮')
+        update_progress(log='等待下一轮...')
         return result
         
     except Exception as e:

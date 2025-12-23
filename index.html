@@ -392,6 +392,37 @@
             50% { opacity: 0.5; }
         }
         
+        .realtime-logs {
+            background: rgba(0,245,255,0.05);
+            border: 1px solid rgba(0,245,255,0.2);
+            border-radius: 8px;
+            padding: 10px;
+            margin-bottom: 12px;
+            max-height: 120px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 11px;
+        }
+        
+        .realtime-logs-inner .log-item {
+            padding: 3px 0;
+            color: #aaa;
+            border-bottom: 1px solid rgba(255,255,255,0.03);
+        }
+        
+        .realtime-logs-inner .log-item:last-child {
+            border-bottom: none;
+            color: #00f5ff;
+        }
+        
+        .realtime-logs-inner .log-item.success { color: #00ff88; }
+        .realtime-logs-inner .log-item.error { color: #ff4444; }
+        
+        .realtime-logs-inner .log-time {
+            color: #555;
+            margin-right: 6px;
+        }
+        
         .record-list {
             max-height: 200px;
             overflow: hidden;
@@ -707,6 +738,11 @@
                     <span class="record-title">分红记录</span>
                     <span class="record-status live" id="dividend-status">实时</span>
                 </div>
+                <!-- 实时分红日志 -->
+                <div class="realtime-logs" id="dividend-realtime-logs" style="display:none;">
+                    <div class="realtime-logs-inner"></div>
+                </div>
+                <!-- 历史记录 -->
                 <div class="record-list" id="dividend-records">
                     <div class="record-list-inner">
                         <div class="record-empty">暂无记录</div>
@@ -719,6 +755,11 @@
                     <span class="record-title">回购销毁</span>
                     <span class="record-status live" id="buyback-status">实时</span>
                 </div>
+                <!-- 实时回购日志 -->
+                <div class="realtime-logs" id="buyback-realtime-logs" style="display:none;">
+                    <div class="realtime-logs-inner"></div>
+                </div>
+                <!-- 历史记录 -->
                 <div class="record-list" id="buyback-records">
                     <div class="record-list-inner">
                         <div class="record-empty">暂无记录</div>
@@ -884,6 +925,23 @@
         // Progress tracking
         let lastProgressUpdate = 0;
         
+        function renderLogs(logs) {
+            let html = '';
+            if (logs && logs.length > 0) {
+                logs.forEach(log => {
+                    let cls = '';
+                    if (log.msg.includes('✓') || log.msg.includes('成功')) cls = 'success';
+                    if (log.msg.includes('✗') || log.msg.includes('失败') || log.msg.includes('错误')) cls = 'error';
+                    const time = new Date(log.time * 1000);
+                    const timeStr = String(time.getHours()).padStart(2,'0') + ':' + 
+                                  String(time.getMinutes()).padStart(2,'0') + ':' + 
+                                  String(time.getSeconds()).padStart(2,'0');
+                    html += `<div class="log-item ${cls}"><span class="log-time">${timeStr}</span>${log.msg}</div>`;
+                });
+            }
+            return html;
+        }
+        
         async function fetchProgress() {
             try {
                 const response = await fetch('/api/progress');
@@ -896,6 +954,8 @@
                 const logsEl = document.getElementById('progress-logs');
                 const dividendStatus = document.getElementById('dividend-status');
                 const buybackStatus = document.getElementById('buyback-status');
+                const dividendRealtimeLogs = document.getElementById('dividend-realtime-logs');
+                const buybackRealtimeLogs = document.getElementById('buyback-realtime-logs');
                 
                 if (data.running) {
                     section.classList.add('active');
@@ -935,21 +995,27 @@
                         buybackStatus.className = 'record-status live';
                     }
                     
-                    // Logs - only update if changed
-                    if (data.updated_at > lastProgressUpdate && data.logs && data.logs.length > 0) {
+                    // Update realtime logs in respective sections
+                    if (data.updated_at > lastProgressUpdate) {
                         lastProgressUpdate = data.updated_at;
-                        let logsHtml = '';
-                        data.logs.forEach(log => {
-                            let cls = '';
-                            if (log.msg.includes('✓') || log.msg.includes('成功')) cls = 'success';
-                            if (log.msg.includes('✗') || log.msg.includes('失败') || log.msg.includes('错误')) cls = 'error';
-                            const time = new Date(log.time * 1000);
-                            const timeStr = String(time.getHours()).padStart(2,'0') + ':' + 
-                                          String(time.getMinutes()).padStart(2,'0') + ':' + 
-                                          String(time.getSeconds()).padStart(2,'0');
-                            logsHtml += `<div class="progress-log-item ${cls}"><span class="progress-log-time">${timeStr}</span>${log.msg}</div>`;
-                        });
-                        logsEl.innerHTML = logsHtml;
+                        
+                        // Dividend logs
+                        if (data.dividend_logs && data.dividend_logs.length > 0) {
+                            dividendRealtimeLogs.style.display = 'block';
+                            dividendRealtimeLogs.querySelector('.realtime-logs-inner').innerHTML = renderLogs(data.dividend_logs);
+                            dividendRealtimeLogs.scrollTop = dividendRealtimeLogs.scrollHeight;
+                        }
+                        
+                        // Buyback logs
+                        if (data.buyback_logs && data.buyback_logs.length > 0) {
+                            buybackRealtimeLogs.style.display = 'block';
+                            buybackRealtimeLogs.querySelector('.realtime-logs-inner').innerHTML = renderLogs(data.buyback_logs);
+                            buybackRealtimeLogs.scrollTop = buybackRealtimeLogs.scrollHeight;
+                        }
+                        
+                        // Combined logs for progress section
+                        const allLogs = [...(data.dividend_logs || []), ...(data.buyback_logs || [])].sort((a,b) => a.time - b.time);
+                        logsEl.innerHTML = renderLogs(allLogs).replace(/log-item/g, 'progress-log-item').replace(/log-time/g, 'progress-log-time');
                         logsEl.scrollTop = logsEl.scrollHeight;
                     }
                 } else {
@@ -959,8 +1025,15 @@
                     buybackStatus.textContent = '实时';
                     buybackStatus.className = 'record-status live';
                     
-                    // Show completion or hide
-                    if (data.phase === 'done' && data.logs && data.logs.length > 0) {
+                    // Hide realtime logs after a delay
+                    if (data.phase !== 'done') {
+                        dividendRealtimeLogs.style.display = 'none';
+                        buybackRealtimeLogs.style.display = 'none';
+                    }
+                    
+                    // Show completion or hide progress section
+                    const hasLogs = (data.dividend_logs && data.dividend_logs.length > 0) || (data.buyback_logs && data.buyback_logs.length > 0);
+                    if (data.phase === 'done' && hasLogs) {
                         section.classList.add('active');
                         phaseEl.textContent = '✅ 上轮执行完成';
                         stepEl.textContent = '等待下一轮';
