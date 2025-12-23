@@ -558,10 +558,22 @@ def api_status():
     """获取当前状态和倒计时"""
     countdown = get_countdown()
     
+    # 获取最新分红结果
+    last_result = None
+    try:
+        if RECORDS_FILE.exists():
+            with open(RECORDS_FILE) as f:
+                records = json.load(f)
+                if records.get('dividend') and len(records['dividend']) > 0:
+                    last_result = records['dividend'][0]
+    except:
+        pass
+    
     return jsonify({
         'countdown': countdown,
         'running': lottery_running,
-        'last_execution': last_execution_time
+        'last_execution': last_execution_time,
+        'last_result': last_result
     })
 
 @app.route('/api/holders', methods=['GET'])

@@ -714,8 +714,8 @@
         function showLotteryResult(data) {
             const result = document.getElementById('lottery-result');
             result.style.display = 'block';
-            document.getElementById('lottery-winner').textContent = data.winner_full_address;
-            document.getElementById('lottery-amount').textContent = '+' + (data.dividend_amount || data.amount || 0).toFixed(6) + ' BNB';
+            document.getElementById('lottery-winner').textContent = data.full_address || data.winner_full_address || '';
+            document.getElementById('lottery-amount').textContent = '+' + (data.amount || data.dividend_amount || 0).toFixed(6) + ' BNB';
             document.getElementById('lottery-time').textContent = formatTime(data.timestamp);
             
             let msg = '';
