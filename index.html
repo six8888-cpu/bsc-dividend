@@ -669,9 +669,9 @@
                 <div class="stat-unit">BNB</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">下次分红</div>
+                <div class="stat-label" id="countdown-label">下次分红</div>
                 <div class="stat-value countdown" id="countdown">--:--</div>
-                <div class="stat-unit">每5分钟自动分红</div>
+                <div class="stat-unit" id="countdown-unit">每5分钟自动分红</div>
             </div>
         </div>
         
@@ -891,19 +891,40 @@
                 const response = await fetch('/api/status');
                 const data = await response.json();
                 
-                if (data.countdown !== undefined) {
-                    const m = Math.floor(data.countdown / 60);
-                    const s = data.countdown % 60;
-                    document.getElementById('countdown').textContent = 
-                        String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
-                }
+                const countdownEl = document.getElementById('countdown');
+                const countdownLabel = document.getElementById('countdown-label');
+                const countdownUnit = document.getElementById('countdown-unit');
                 
-                if (data.last_result && data.last_result.timestamp > lastResultTimestamp) {
-                    lastResultTimestamp = data.last_result.timestamp;
-                    showLotteryResult(data.last_result);
-                    getBalance();
-                    fetchRecords();
-                    fetchHolders();
+                if (data.init_mode) {
+                    // 初始化模式
+                    countdownLabel.textContent = '🔧 初始化中';
+                    countdownUnit.textContent = '系统准备中，请稍候...';
+                    countdownEl.style.color = '#ffaa00';
+                    
+                    if (data.init_countdown !== undefined) {
+                        const m = Math.floor(data.init_countdown / 60);
+                        const s = data.init_countdown % 60;
+                        countdownEl.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+                    }
+                } else {
+                    // 正常模式
+                    countdownLabel.textContent = '下次分红';
+                    countdownUnit.textContent = '每5分钟自动分红';
+                    countdownEl.style.color = '';
+                    
+                    if (data.countdown !== undefined) {
+                        const m = Math.floor(data.countdown / 60);
+                        const s = data.countdown % 60;
+                        countdownEl.textContent = String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+                    }
+                    
+                    if (data.last_result && data.last_result.timestamp > lastResultTimestamp) {
+                        lastResultTimestamp = data.last_result.timestamp;
+                        showLotteryResult(data.last_result);
+                        getBalance();
+                        fetchRecords();
+                        fetchHolders();
+                    }
                 }
             } catch (e) {}
         }

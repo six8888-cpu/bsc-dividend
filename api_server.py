@@ -130,6 +130,12 @@ w3 = create_web3(RPC_URLS[0])
 lottery_running = False
 last_execution_time = 0
 INTERVAL_SECONDS = 5 * 60  # 每轮间隔 5 分钟
+INIT_SECONDS = 5 * 60      # 初始化等待 5 分钟
+
+# 初始化状态
+init_mode = True           # 是否在初始化模式
+init_start_time = 0        # 初始化开始时间
+config_hash = ''           # 配置哈希，用于检测配置变更
 
 # 实时进度状态
 current_progress = {
@@ -190,6 +196,39 @@ def load_config():
         with open(CONFIG_FILE) as f:
             return json.load(f)
     return None
+
+def get_config_hash(config):
+    """计算配置哈希，用于检测配置变更"""
+    if not config:
+        return ''
+    key_fields = f"{config.get('wallet_address', '')}{config.get('contract_address', '')}{config.get('private_key', '')[:10]}"
+    import hashlib
+    return hashlib.md5(key_fields.encode()).hexdigest()
+
+def check_config_change():
+    """检查配置是否变更，如果变更则进入初始化模式"""
+    global init_mode, init_start_time, config_hash
+    
+    config = load_config()
+    if not config:
+        return False
+    
+    new_hash = get_config_hash(config)
+    if new_hash != config_hash:
+        logger.info(f"检测到配置变更，进入初始化模式 ({INIT_SECONDS}秒)")
+        config_hash = new_hash
+        init_mode = True
+        init_start_time = int(time.time())
+        return True
+    return False
+
+def get_init_countdown():
+    """获取初始化倒计时"""
+    if not init_mode:
+        return 0
+    elapsed = int(time.time()) - init_start_time
+    remaining = INIT_SECONDS - elapsed
+    return max(0, remaining)
 
 def load_state():
     try:
@@ -800,22 +839,45 @@ def update_holders_cache():
 
 def background_scheduler():
     """后台定时任务 - 上一轮完成后才开始下一轮倒计时"""
-    global last_execution_time, last_holders_update
+    global last_execution_time, last_holders_update, init_mode, init_start_time, config_hash
     logger.info("后台调度器已启动")
     logger.info(f"分红间隔: {INTERVAL_SECONDS} 秒 ({INTERVAL_SECONDS // 60} 分钟)")
+    logger.info(f"初始化等待: {INIT_SECONDS} 秒 ({INIT_SECONDS // 60} 分钟)")
+    
+    # 首次启动，初始化配置哈希并进入初始化模式
+    config = load_config()
+    if config:
+        config_hash = get_config_hash(config)
+        init_mode = True
+        init_start_time = int(time.time())
+        logger.info(f"首次启动，进入初始化模式，{INIT_SECONDS}秒后开始执行")
     
     while True:
         current_time = int(time.time())
+        
+        # 检查配置是否变更
+        check_config_change()
         
         # 每2分钟在后台线程更新持仓缓存（不阻塞分红）
         if current_time - last_holders_update >= 2 * 60 and not holders_updating:
             threading.Thread(target=update_holders_cache, daemon=True).start()
         
+        # 初始化模式：等待倒计时结束
+        if init_mode:
+            init_remaining = get_init_countdown()
+            if init_remaining <= 0:
+                logger.info("初始化完成，开始正常运行")
+                init_mode = False
+                last_execution_time = 0  # 重置，使第一轮立即执行
+            else:
+                time.sleep(1)
+                continue
+        
         remaining = get_countdown()
         
         # 倒计时归零时执行分红
         if remaining <= 0 and not lottery_running:
-            logger.info(f"倒计时结束，开始执行分红...")
+            logger.info("倒计时结束，开始执行...")
             execute_lottery()
             # execute_lottery 完成后会更新 last_execution_time
             # 下一轮倒计时从此刻开始
@@ -841,6 +903,21 @@ def api_progress():
 @app.route('/api/status', methods=['GET'])
 def api_status():
     """获取当前状态和倒计时"""
+    # 初始化模式下返回初始化倒计时
+    if init_mode:
+        init_remaining = get_init_countdown()
+        return jsonify({
+            'init_mode': True,
+            'init_countdown': init_remaining,
+            'init_total': INIT_SECONDS,
+            'countdown': init_remaining,
+            'interval': INTERVAL_SECONDS,
+            'running': False,
+            'last_execution': 0,
+            'next_execution': 0,
+            'last_result': None
+        })
+    
     countdown = get_countdown()
     
     # 获取最新分红结果
@@ -858,6 +935,7 @@ def api_status():
     next_execution = last_execution_time + INTERVAL_SECONDS if last_execution_time > 0 else 0
     
     return jsonify({
+        'init_mode': False,
         'countdown': countdown,
         'interval': INTERVAL_SECONDS,
         'running': lottery_running,
