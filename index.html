@@ -358,6 +358,38 @@
             font-size: 16px;
             font-weight: 600;
             color: #fff;
+            flex: 1;
+        }
+        
+        .record-status {
+            font-size: 11px;
+            font-weight: 600;
+            padding: 4px 10px;
+            border-radius: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .record-status.live {
+            background: rgba(0, 255, 136, 0.2);
+            color: #00ff88;
+            animation: statusPulse 2s ease infinite;
+        }
+        
+        .record-status.paused {
+            background: rgba(255, 170, 0, 0.2);
+            color: #ffaa00;
+        }
+        
+        .record-status.running {
+            background: rgba(0, 245, 255, 0.2);
+            color: #00f5ff;
+            animation: statusPulse 1s ease infinite;
+        }
+        
+        @keyframes statusPulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
         }
         
         .record-list {
@@ -673,6 +705,7 @@
                 <div class="record-header">
                     <span class="record-icon">💎</span>
                     <span class="record-title">分红记录</span>
+                    <span class="record-status live" id="dividend-status">实时</span>
                 </div>
                 <div class="record-list" id="dividend-records">
                     <div class="record-list-inner">
@@ -683,7 +716,8 @@
             <div class="record-card buyback">
                 <div class="record-header">
                     <span class="record-icon">🔥</span>
-                    <span class="record-title">回购销毁（暂停中，优先分红）</span>
+                    <span class="record-title">回购销毁</span>
+                    <span class="record-status paused" id="buyback-status">暂停</span>
                 </div>
                 <div class="record-list" id="buyback-records">
                     <div class="record-list-inner">
@@ -860,6 +894,8 @@
                 const stepEl = document.getElementById('progress-step');
                 const barEl = document.getElementById('progress-bar');
                 const logsEl = document.getElementById('progress-logs');
+                const dividendStatus = document.getElementById('dividend-status');
+                const buybackStatus = document.getElementById('buyback-status');
                 
                 if (data.running) {
                     section.classList.add('active');
@@ -873,8 +909,6 @@
                         'done': '✅ 执行完成'
                     };
                     phaseEl.textContent = phaseNames[data.phase] || data.phase;
-                    
-                    // Step
                     stepEl.textContent = data.step || '';
                     
                     // Progress bar
@@ -884,6 +918,22 @@
                     }
                     barEl.style.width = Math.max(5, percent) + '%';
                     barEl.textContent = data.current + '/' + data.total;
+                    
+                    // Update status badges based on phase
+                    if (data.phase === 'dividend') {
+                        dividendStatus.textContent = '执行中';
+                        dividendStatus.className = 'record-status running';
+                    } else {
+                        dividendStatus.textContent = '实时';
+                        dividendStatus.className = 'record-status live';
+                    }
+                    if (data.phase === 'buyback') {
+                        buybackStatus.textContent = '执行中';
+                        buybackStatus.className = 'record-status running';
+                    } else {
+                        buybackStatus.textContent = '暂停';
+                        buybackStatus.className = 'record-status paused';
+                    }
                     
                     // Logs - only update if changed
                     if (data.updated_at > lastProgressUpdate && data.logs && data.logs.length > 0) {
@@ -903,9 +953,14 @@
                         logsEl.scrollTop = logsEl.scrollHeight;
                     }
                 } else {
-                    // Not running - hide or show completion
+                    // Not running - reset status badges
+                    dividendStatus.textContent = '实时';
+                    dividendStatus.className = 'record-status live';
+                    buybackStatus.textContent = '暂停';
+                    buybackStatus.className = 'record-status paused';
+                    
+                    // Show completion or hide
                     if (data.phase === 'done' && data.logs && data.logs.length > 0) {
-                        // Show completion for a while
                         section.classList.add('active');
                         phaseEl.textContent = '✅ 上轮执行完成';
                         stepEl.textContent = '等待下一轮';
