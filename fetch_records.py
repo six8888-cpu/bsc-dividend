@@ -4,13 +4,33 @@ import time
 import requests
 from pathlib import Path
 
-WALLET_ADDRESS = '0x6dad867551448dfad8775d4a2f78c12e200c6027'
-CONTRACT_ADDRESS = '0x9bb72f4568157dad11a3f759ef4934bae1667777'
+BASE_DIR = Path(__file__).parent
+CONFIG_FILE = BASE_DIR / 'config.json'
+OUTPUT_FILE = BASE_DIR / 'records.json'
+STATE_FILE = BASE_DIR / 'state.json'
+
+# 从配置文件读取地址，如果不存在则使用默认值
+def load_addresses():
+    """从 config.json 加载钱包和合约地址"""
+    try:
+        if CONFIG_FILE.exists():
+            with open(CONFIG_FILE) as f:
+                config = json.load(f)
+                return (
+                    config.get('wallet_address', '').lower(),
+                    config.get('contract_address', '').lower()
+                )
+    except Exception as e:
+        print(f"警告: 无法读取配置文件: {e}")
+    # 默认值（如果配置不存在）
+    return (
+        '0x6dad867551448dfad8775d4a2f78c12e200c6027',
+        '0x9bb72f4568157dad11a3f759ef4934bae1667777'
+    )
+
+WALLET_ADDRESS, CONTRACT_ADDRESS = load_addresses()
 DEAD_ADDRESS = '0x000000000000000000000000000000000000dead'
 TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef'
-
-OUTPUT_FILE = Path(__file__).parent / 'records.json'
-STATE_FILE = Path(__file__).parent / 'state.json'
 
 RPC_URL = 'https://bsc-dataseed.binance.org/'
 
@@ -170,6 +190,8 @@ def scan_blocks(from_block, to_block, state):
 
 def main():
     print('Starting auto-monitor...')
+    print(f'钱包地址: {WALLET_ADDRESS}')
+    print(f'合约地址: {CONTRACT_ADDRESS}')
     state = load_state()
     
     if state['last_block'] == 0:

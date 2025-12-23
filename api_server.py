@@ -8,12 +8,21 @@ import time
 import random
 import requests
 import re
+import logging
 from pathlib import Path
 from flask import Flask, jsonify, send_from_directory
 from flask_cors import CORS
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 import threading
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 app = Flask(__name__, static_folder='.')
 CORS(app)
@@ -34,6 +43,12 @@ RPC_URLS = [
     'https://bsc-rpc.publicnode.com',
     'https://bsc.meowrpc.com',
 ]
+
+# 线程锁，保护全局状态
+_rpc_lock = threading.Lock()
+_lottery_lock = threading.Lock()
+_holders_lock = threading.Lock()
+
 current_rpc_index = 0
 
 DEAD_ADDRESS = '0x000000000000000000000000000000000000dEaD'
@@ -69,10 +84,10 @@ def create_web3(rpc_url):
     return w3
 
 def get_web3():
-    """获取可用的 Web3 连接，自动故障转移"""
+    """获取可用的 Web3 连接，自动故障转移（线程安全）"""
     global current_rpc_index, w3
     
-    # 先测试当前连接
+    # 先测试当前连接（不加锁，快速路径）
     try:
         if w3.is_connected():
             w3.eth.block_number  # 测试实际请求
@@ -80,24 +95,33 @@ def get_web3():
     except:
         pass
     
-    # 当前连接失败，尝试其他节点
-    for i in range(len(RPC_URLS)):
-        idx = (current_rpc_index + i) % len(RPC_URLS)
-        rpc_url = RPC_URLS[idx]
+    # 当前连接失败，加锁尝试切换节点
+    with _rpc_lock:
+        # 双重检查，可能其他线程已经切换成功
         try:
-            new_w3 = create_web3(rpc_url)
-            if new_w3.is_connected():
-                new_w3.eth.block_number  # 测试实际请求
-                if idx != current_rpc_index:
-                    print(f"[RPC] 切换到: {rpc_url}")
-                    current_rpc_index = idx
-                    w3 = new_w3
+            if w3.is_connected():
+                w3.eth.block_number
                 return w3
-        except Exception as e:
-            print(f"[RPC] {rpc_url} 不可用: {e}")
-    
-    print("[RPC] 警告: 所有节点都不可用!")
-    return w3
+        except:
+            pass
+        
+        for i in range(len(RPC_URLS)):
+            idx = (current_rpc_index + i) % len(RPC_URLS)
+            rpc_url = RPC_URLS[idx]
+            try:
+                new_w3 = create_web3(rpc_url)
+                if new_w3.is_connected():
+                    new_w3.eth.block_number  # 测试实际请求
+                    if idx != current_rpc_index:
+                        logger.info(f"[RPC] 切换到: {rpc_url}")
+                        current_rpc_index = idx
+                        w3 = new_w3
+                    return w3
+            except Exception as e:
+                logger.warning(f"[RPC] {rpc_url} 不可用: {e}")
+        
+        logger.error("[RPC] 警告: 所有节点都不可用!")
+        return w3
 
 # 初始化默认连接
 w3 = create_web3(RPC_URLS[0])
@@ -105,6 +129,7 @@ w3 = create_web3(RPC_URLS[0])
 # 全局状态
 lottery_running = False
 last_execution_time = 0
+INTERVAL_SECONDS = 5 * 60  # 每轮间隔 5 分钟
 
 def load_config():
     if CONFIG_FILE.exists():
@@ -141,7 +166,7 @@ def get_bnb_balance(address):
 
 def get_top_holders(contract_address):
     """获取代币前50持仓者地址（优化版：并发查询 + 超时控制）"""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
     
     web3 = get_web3()
     BALANCE_OF = '0x70a08231'
@@ -159,7 +184,7 @@ def get_top_holders(contract_address):
                 for addr in addresses:
                     all_addresses.add(addr.lower())
         except Exception as e:
-            print(f"BSCScan获取失败: {e}")
+            logger.warning(f"BSCScan获取失败: {e}")
     
     try:
         state = load_state()
@@ -181,7 +206,7 @@ def get_top_holders(contract_address):
     
     # 限制查询数量，避免太多地址导致卡死
     addresses_to_check = list(all_addresses)[:200]
-    print(f"  查询 {len(addresses_to_check)} 个地址的余额...")
+    logger.info(f"  查询 {len(addresses_to_check)} 个地址的余额...")
     
     def check_balance(addr):
         """查询单个地址余额（带超时）"""
@@ -199,18 +224,27 @@ def get_top_holders(contract_address):
     
     # 并发查询（最多10个线程）
     holders = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(check_balance, addr): addr for addr in addresses_to_check}
-        for future in as_completed(futures, timeout=60):  # 总超时60秒
+    try:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(check_balance, addr): addr for addr in addresses_to_check}
             try:
-                result = future.result(timeout=5)  # 单个超时5秒
-                if result:
-                    holders.append(result)
-            except:
-                pass
+                for future in as_completed(futures, timeout=60):  # 总超时60秒
+                    try:
+                        result = future.result(timeout=5)  # 单个超时5秒
+                        if result:
+                            holders.append(result)
+                    except Exception:
+                        pass
+            except FuturesTimeoutError:
+                logger.warning("  持仓查询总超时，使用已获取的结果")
+                # 取消未完成的任务
+                for f in futures:
+                    f.cancel()
+    except Exception as e:
+        logger.error(f"  持仓查询异常: {e}")
     
     holders.sort(key=lambda x: x[1], reverse=True)
-    print(f"  找到 {len(holders)} 个有效持仓者")
+    logger.info(f"  找到 {len(holders)} 个有效持仓者")
     return holders[:100]
 
 def save_holders(holders, contract_address):
@@ -225,31 +259,60 @@ def save_holders(holders, contract_address):
     return output
 
 def send_dividend(config, amount_bnb, to_address, nonce=None, max_retries=3):
-    """发送 BNB 分红，失败自动重试
+    """发送 BNB 分红，失败自动重试（防止双重发送）
     
     Args:
         nonce: 如果提供则使用指定的 nonce，否则从链上获取
     Returns:
-        成功返回 (result_dict, used_nonce)，失败返回 (None, nonce)
+        成功返回 (result_dict, next_nonce)，失败返回 (None, current_nonce)
     """
     web3 = get_web3()
     wallet = config['wallet_address']
     private_key = config['private_key']
     amount_wei = web3.to_wei(amount_bnb, 'ether')
     last_error = None
+    sent_tx_hash = None  # 记录已发送的交易哈希
     
     # 如果没有提供 nonce，从链上获取
     if nonce is None:
         nonce = web3.eth.get_transaction_count(wallet, 'pending')
+    
+    original_nonce = nonce
     
     for attempt in range(max_retries):
         try:
             # 每次重试前等待更长时间
             if attempt > 0:
                 time.sleep(5 + attempt * 2)
-                # 重试时重新获取 nonce 和 web3 连接（可能需要切换节点）
                 web3 = get_web3()
-                nonce = web3.eth.get_transaction_count(wallet, 'pending')
+                
+                # 如果之前已发送交易，先检查是否已确认
+                if sent_tx_hash:
+                    try:
+                        receipt = web3.eth.get_transaction_receipt(sent_tx_hash)
+                        if receipt is not None:
+                            if receipt['status'] == 1:
+                                # 之前的交易已成功，直接返回
+                                logger.info(f"  之前发送的交易已确认: {sent_tx_hash.hex()}")
+                                tx_hash_str = sent_tx_hash.hex()
+                                if not tx_hash_str.startswith('0x'):
+                                    tx_hash_str = '0x' + tx_hash_str
+                                return ({
+                                    'address': to_address[:6] + '...' + to_address[-4:],
+                                    'full_address': to_address,
+                                    'amount': amount_bnb,
+                                    'tx_hash': tx_hash_str,
+                                    'block': receipt['blockNumber'],
+                                    'timestamp': int(time.time())
+                                }, original_nonce + 1)
+                            else:
+                                # 交易失败，需要用新 nonce 重试
+                                logger.warning(f"  之前的交易失败，重新获取 nonce")
+                                nonce = web3.eth.get_transaction_count(wallet, 'pending')
+                                sent_tx_hash = None
+                    except Exception:
+                        # 交易还未上链，继续等待或用相同 nonce 重试
+                        pass
             
             # 每次重试增加 gas price 以加速确认
             gas_price_gwei = 3 + attempt * 2  # 3, 5, 7 gwei
@@ -265,10 +328,14 @@ def send_dividend(config, amount_bnb, to_address, nonce=None, max_retries=3):
             
             signed_tx = web3.eth.account.sign_transaction(tx, private_key)
             tx_hash = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            sent_tx_hash = tx_hash  # 记录已发送的交易
+            
             receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
             
             if receipt['status'] != 1:
                 last_error = "交易状态失败"
+                sent_tx_hash = None  # 交易失败，清除记录
+                nonce = web3.eth.get_transaction_count(wallet, 'pending')
                 continue
             
             tx_hash_str = tx_hash.hex()
@@ -286,10 +353,31 @@ def send_dividend(config, amount_bnb, to_address, nonce=None, max_retries=3):
             return (result, nonce + 1)  # 返回结果和下一个 nonce
         except Exception as e:
             last_error = str(e)
-            print(f"分红重试 {attempt+1}/{max_retries} (nonce={nonce}, gas={gas_price_gwei}gwei): {e}")
+            logger.warning(f"分红重试 {attempt+1}/{max_retries} (nonce={nonce}, gas={gas_price_gwei}gwei): {e}")
     
-    print(f"分红失败: 重试{max_retries}次后仍失败, 最后错误: {last_error}, 目标地址: {to_address}")
-    return (None, nonce)
+    # 最后检查一次是否之前的交易已成功
+    if sent_tx_hash:
+        try:
+            web3 = get_web3()
+            receipt = web3.eth.get_transaction_receipt(sent_tx_hash)
+            if receipt is not None and receipt['status'] == 1:
+                logger.info(f"  最终确认交易成功: {sent_tx_hash.hex()}")
+                tx_hash_str = sent_tx_hash.hex()
+                if not tx_hash_str.startswith('0x'):
+                    tx_hash_str = '0x' + tx_hash_str
+                return ({
+                    'address': to_address[:6] + '...' + to_address[-4:],
+                    'full_address': to_address,
+                    'amount': amount_bnb,
+                    'tx_hash': tx_hash_str,
+                    'block': receipt['blockNumber'],
+                    'timestamp': int(time.time())
+                }, original_nonce + 1)
+        except Exception:
+            pass
+    
+    logger.error(f"分红失败: 重试{max_retries}次后仍失败, 最后错误: {last_error}, 目标地址: {to_address}")
+    return (None, original_nonce)
 
 def buyback_and_burn(config, amount_bnb, max_retries=3):
     """通过 Flap Portal swapExactInput 回购代币并销毁，支持重试"""
@@ -310,10 +398,10 @@ def buyback_and_burn(config, amount_bnb, max_retries=3):
         try:
             if attempt > 0:
                 time.sleep(5 + attempt * 2)
-                print(f"  购买重试 {attempt+1}/{max_retries}...")
+                logger.info(f"  购买重试 {attempt+1}/{max_retries}...")
             
             balance_before = token_contract.functions.balanceOf(wallet).call()
-            print(f"  购买前余额: {balance_before / 1e18:,.2f} 枚")
+            logger.info(f"  购买前余额: {balance_before / 1e18:,.2f} 枚")
             
             ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
             swap_params = (
@@ -337,11 +425,11 @@ def buyback_and_burn(config, amount_bnb, max_retries=3):
             
             signed_buy = web3.eth.account.sign_transaction(buy_tx, private_key)
             buy_hash = web3.eth.send_raw_transaction(signed_buy.raw_transaction)
-            print(f"  购买交易: {buy_hash.hex()} (nonce={nonce}, gas={gas_price_gwei}gwei)")
+            logger.info(f"  购买交易: {buy_hash.hex()} (nonce={nonce}, gas={gas_price_gwei}gwei)")
             
             buy_receipt = web3.eth.wait_for_transaction_receipt(buy_hash, timeout=120)
             if buy_receipt['status'] != 1:
-                print(f"  购买交易失败! status={buy_receipt['status']}")
+                logger.warning(f"  购买交易失败! status={buy_receipt['status']}")
                 continue
             
             # 从交易日志中解析获得的代币数量
@@ -354,16 +442,16 @@ def buyback_and_burn(config, amount_bnb, max_retries=3):
                         break
             
             if tokens_bought > 0:
-                print(f"  购买成功: {tokens_bought / 1e18:,.2f} 枚")
+                logger.info(f"  购买成功: {tokens_bought / 1e18:,.2f} 枚")
                 break
             else:
-                print("  未获得代币，重试中...")
+                logger.warning("  未获得代币，重试中...")
                 
         except Exception as e:
-            print(f"  购买异常 {attempt+1}/{max_retries}: {e}")
+            logger.warning(f"  购买异常 {attempt+1}/{max_retries}: {e}")
     
     if tokens_bought <= 0:
-        print("  购买失败: 重试后仍未获得代币")
+        logger.error("  购买失败: 重试后仍未获得代币")
         return None
     
     # ========== 第二步：销毁代币（带重试）==========
@@ -371,7 +459,7 @@ def buyback_and_burn(config, amount_bnb, max_retries=3):
         try:
             if attempt > 0:
                 time.sleep(5 + attempt * 2)
-                print(f"  销毁重试 {attempt+1}/{max_retries}...")
+                logger.info(f"  销毁重试 {attempt+1}/{max_retries}...")
             
             nonce = web3.eth.get_transaction_count(wallet, 'pending')
             gas_price_gwei = 3 + attempt * 2
@@ -387,11 +475,11 @@ def buyback_and_burn(config, amount_bnb, max_retries=3):
             
             signed_burn = web3.eth.account.sign_transaction(burn_tx, private_key)
             burn_hash = web3.eth.send_raw_transaction(signed_burn.raw_transaction)
-            print(f"  销毁交易: {burn_hash.hex()} (nonce={nonce}, gas={gas_price_gwei}gwei)")
+            logger.info(f"  销毁交易: {burn_hash.hex()} (nonce={nonce}, gas={gas_price_gwei}gwei)")
             
             receipt = web3.eth.wait_for_transaction_receipt(burn_hash, timeout=120)
             if receipt['status'] != 1:
-                print(f"  销毁交易失败! status={receipt['status']}")
+                logger.warning(f"  销毁交易失败! status={receipt['status']}")
                 continue
             tx_hash_str = burn_hash.hex()
             if not tx_hash_str.startswith('0x'):
@@ -405,80 +493,97 @@ def buyback_and_burn(config, amount_bnb, max_retries=3):
                 'timestamp': int(time.time())
             }
         except Exception as e:
-            print(f"  销毁异常 {attempt+1}/{max_retries}: {e}")
+            logger.warning(f"  销毁异常 {attempt+1}/{max_retries}: {e}")
     
-    print(f"  销毁失败: 重试后仍失败，代币可能留在钱包中")
+    logger.error("  销毁失败: 重试后仍失败，代币可能留在钱包中")
     return None
 
 def execute_lottery():
-    """执行一轮回购分红"""
+    """执行一轮回购分红（线程安全）"""
     global lottery_running, last_execution_time
     
-    if lottery_running:
-        return None
+    # 使用锁保护状态检查和设置
+    with _lottery_lock:
+        if lottery_running:
+            return None
+        lottery_running = True
     
-    lottery_running = True
-    print(f"\n{'='*50}")
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 开始执行回购分红")
-    print(f"{'='*50}")
+    logger.info("=" * 50)
+    logger.info("开始执行回购分红")
+    logger.info("=" * 50)
     
     try:
         config = load_config()
         if not config:
-            print("错误: 配置文件不存在")
+            logger.error("错误: 配置文件不存在")
             return None
         
         balance = float(get_bnb_balance(config['wallet_address']))
         gas_reserve = 0.002  # 只预留 gas 费用
         available = balance - gas_reserve
         
-        print(f"当前余额: {balance:.6f} BNB, 可用: {available:.6f} BNB")
+        logger.info(f"当前余额: {balance:.6f} BNB, 可用: {available:.6f} BNB")
         
         if available <= 0:
-            print(f"余额不足以支付 gas，跳过本轮")
+            logger.warning("余额不足以支付 gas，跳过本轮")
             return None
         
         dividend_amount = available  # 100%用于分红，不回购
         
         state = load_state()
+        # 初始化失败记录列表（如果不存在）
+        if 'failed_dividends' not in state:
+            state['failed_dividends'] = []
+        
         result = {'timestamp': int(time.time())}
         
         # 分红：前30名均分
-        print(f"\n分红: {dividend_amount:.6f} BNB")
-        # 优先使用缓存数据，避免卡住
+        logger.info(f"分红: {dividend_amount:.6f} BNB")
+        
+        # 优先使用缓存数据，但检查缓存是否过期（超过10分钟则重新获取）
         holders = None
+        cache_max_age = 10 * 60  # 10分钟
         if HOLDERS_FILE.exists():
             try:
                 with open(HOLDERS_FILE) as f:
                     data = json.load(f)
-                    holders = [(h['address'], h['balance']) for h in data.get('holders', [])[:30]]
-                    print(f"  使用缓存持仓数据 ({len(holders)} 人)")
-            except:
-                pass
+                    cache_time = data.get('updated', 0)
+                    cache_age = int(time.time()) - cache_time
+                    
+                    if cache_age < cache_max_age:
+                        holders = [(h['address'], h['balance']) for h in data.get('holders', [])[:30]]
+                        logger.info(f"  使用缓存持仓数据 ({len(holders)} 人, 缓存年龄: {cache_age}秒)")
+                    else:
+                        logger.warning(f"  缓存已过期 ({cache_age}秒 > {cache_max_age}秒)，重新获取")
+            except Exception as e:
+                logger.warning(f"  读取缓存失败: {e}")
+        
         if not holders:
             holders = get_top_holders(config['contract_address'])
             if holders:
                 save_holders(holders, config['contract_address'])
+        
         if not holders:
-            print("  无法获取持仓者")
+            logger.error("  无法获取持仓者")
             return None
         
         min_dividend = 0.001  # 最小分红金额，低于此不发送（节省gas）
         dividend_results = []
+        failed_dividends = []
         total_sent = 0
         
         # 前30名均分 100%
         top30 = holders[:30]
         if top30 and dividend_amount >= min_dividend:
             per_person = dividend_amount / len(top30)
-            print(f"  [前30名均分] 总额: {dividend_amount:.6f} BNB, 每人: {per_person:.6f} BNB")
+            logger.info(f"  [前30名均分] 总额: {dividend_amount:.6f} BNB, 每人: {per_person:.6f} BNB")
             
             # 获取初始 nonce，后续手动递增避免 nonce too low 错误
             web3 = get_web3()
             current_nonce = web3.eth.get_transaction_count(config['wallet_address'], 'pending')
-            print(f"  初始 nonce: {current_nonce}")
+            logger.info(f"  初始 nonce: {current_nonce}")
             
-            for i, (holder_addr, _) in enumerate(top30):
+            for i, (holder_addr, holder_balance) in enumerate(top30):
                 if per_person < min_dividend:
                     continue
                 div_result, current_nonce = send_dividend(config, per_person, holder_addr, nonce=current_nonce)
@@ -486,12 +591,28 @@ def execute_lottery():
                     dividend_results.append(div_result)
                     state['dividend'].insert(0, div_result)
                     total_sent += per_person
-                    print(f"  [{i+1}/{len(top30)}] 发送成功: {holder_addr[:10]}... -> {per_person:.6f} BNB")
+                    logger.info(f"  [{i+1}/{len(top30)}] 发送成功: {holder_addr[:10]}... -> {per_person:.6f} BNB")
+                else:
+                    # 记录失败的分红
+                    failed_record = {
+                        'address': holder_addr[:6] + '...' + holder_addr[-4:],
+                        'full_address': holder_addr,
+                        'amount': per_person,
+                        'timestamp': int(time.time()),
+                        'holder_balance': holder_balance
+                    }
+                    failed_dividends.append(failed_record)
+                    state['failed_dividends'].insert(0, failed_record)
+                    logger.warning(f"  [{i+1}/{len(top30)}] 发送失败: {holder_addr[:10]}...")
         
+        # 限制记录数量
         state['dividend'] = state['dividend'][:100]
+        state['failed_dividends'] = state['failed_dividends'][:50]
+        
         result['dividend_count'] = len(dividend_results)
         result['dividend_total'] = total_sent
-        print(f"  成功发送 {len(dividend_results)} 笔，共 {total_sent:.6f} BNB")
+        result['failed_count'] = len(failed_dividends)
+        logger.info(f"  成功发送 {len(dividend_results)} 笔，共 {total_sent:.6f} BNB，失败 {len(failed_dividends)} 笔")
         
         # 保存状态
         state['last_block'] = get_web3().eth.block_number
@@ -499,11 +620,11 @@ def execute_lottery():
         save_records(state)
         
         last_execution_time = int(time.time())
-        print(f"\n本轮执行完成!")
+        logger.info("本轮执行完成!")
         return result
         
     except Exception as e:
-        print(f"执行失败: {e}")
+        logger.error(f"执行失败: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -511,40 +632,52 @@ def execute_lottery():
         lottery_running = False
 
 def get_countdown():
-    """获取距离下次执行的倒计时（秒）"""
-    now = time.localtime()
-    minutes = now.tm_min % 5
-    seconds = now.tm_sec
-    remaining = (4 - minutes) * 60 + (59 - seconds)
-    return remaining
+    """获取距离下次执行的倒计时（秒）- 基于上次完成时间"""
+    global last_execution_time
+    
+    # 如果从未执行过，返回0表示立即执行
+    if last_execution_time == 0:
+        return 0
+    
+    # 计算下次执行时间
+    next_execution = last_execution_time + INTERVAL_SECONDS
+    remaining = next_execution - int(time.time())
+    
+    # 如果已经过了执行时间，返回0
+    return max(0, remaining)
 
 last_holders_update = 0
 holders_updating = False
 
 def update_holders_cache():
-    """更新持仓缓存（在单独线程中运行）"""
+    """更新持仓缓存（在单独线程中运行，线程安全）"""
     global last_holders_update, holders_updating
-    if holders_updating:
-        return
-    holders_updating = True
+    
+    # 使用锁保护状态检查和设置
+    with _holders_lock:
+        if holders_updating:
+            return
+        holders_updating = True
+    
     try:
         config = load_config()
         if config:
-            print(f"[{time.strftime('%H:%M:%S')}] 更新持仓缓存...")
+            logger.info("更新持仓缓存...")
             holders = get_top_holders(config['contract_address'])
             if holders:
                 save_holders(holders, config['contract_address'])
-                print(f"  已更新 {len(holders)} 个持仓者")
+                logger.info(f"  已更新 {len(holders)} 个持仓者")
             last_holders_update = int(time.time())
     except Exception as e:
-        print(f"更新持仓失败: {e}")
+        logger.error(f"更新持仓失败: {e}")
     finally:
         holders_updating = False
 
 def background_scheduler():
-    """后台定时任务"""
+    """后台定时任务 - 上一轮完成后才开始下一轮倒计时"""
     global last_execution_time, last_holders_update
-    print("后台调度器已启动")
+    logger.info("后台调度器已启动")
+    logger.info(f"分红间隔: {INTERVAL_SECONDS} 秒 ({INTERVAL_SECONDS // 60} 分钟)")
     
     while True:
         current_time = int(time.time())
@@ -556,13 +689,13 @@ def background_scheduler():
         remaining = get_countdown()
         
         # 倒计时归零时执行分红
-        if remaining <= 1:
-            # 防止重复执行（冷却4分钟）
-            if current_time - last_execution_time >= 4 * 60:
-                execute_lottery()
-            time.sleep(5)
-        else:
-            time.sleep(1)
+        if remaining <= 0 and not lottery_running:
+            logger.info(f"倒计时结束，开始执行分红...")
+            execute_lottery()
+            # execute_lottery 完成后会更新 last_execution_time
+            # 下一轮倒计时从此刻开始
+        
+        time.sleep(1)
 
 # ========== Flask 路由 (只读) ==========
 
@@ -590,10 +723,15 @@ def api_status():
     except:
         pass
     
+    # 计算下次执行时间
+    next_execution = last_execution_time + INTERVAL_SECONDS if last_execution_time > 0 else 0
+    
     return jsonify({
         'countdown': countdown,
+        'interval': INTERVAL_SECONDS,
         'running': lottery_running,
         'last_execution': last_execution_time,
+        'next_execution': next_execution,
         'last_result': last_result
     })
 
@@ -621,20 +759,20 @@ def api_records():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    print("=" * 50)
-    print("BSC 分红系统 (纯后端执行)")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("BSC 分红系统 (纯后端执行)")
+    logger.info("=" * 50)
     
     config = load_config()
     if config:
-        print(f"钱包地址: {config['wallet_address']}")
-        print(f"合约地址: {config['contract_address']}")
+        logger.info(f"钱包地址: {config['wallet_address']}")
+        logger.info(f"合约地址: {config['contract_address']}")
     else:
-        print("警告: 配置文件不存在")
+        logger.warning("警告: 配置文件不存在")
     
-    print(f"\n当前倒计时: {get_countdown()} 秒")
-    print("后端每5分钟自动执行回购+分红")
-    print("\n服务器启动在 http://0.0.0.0:5000")
+    logger.info(f"分红间隔: {INTERVAL_SECONDS} 秒 ({INTERVAL_SECONDS // 60} 分钟)")
+    logger.info("逻辑: 每轮分红完成后开始下一轮倒计时")
+    logger.info("服务器启动在 http://0.0.0.0:5000")
     
     # 启动后台调度器
     scheduler_thread = threading.Thread(target=background_scheduler, daemon=True)
