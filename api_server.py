@@ -24,7 +24,18 @@ STATE_FILE = BASE_DIR / 'state.json'
 HOLDERS_FILE = BASE_DIR / 'holders.json'
 RECORDS_FILE = BASE_DIR / 'records.json'
 
-RPC_URL = 'https://bsc-rpc.publicnode.com'
+# 多 RPC 节点，自动故障转移
+RPC_URLS = [
+    'https://bsc-dataseed.bnbchain.org',
+    'https://bsc-dataseed1.binance.org',
+    'https://bsc-dataseed2.binance.org',
+    'https://bsc-dataseed3.binance.org',
+    'https://bsc-dataseed4.binance.org',
+    'https://bsc-rpc.publicnode.com',
+    'https://bsc.meowrpc.com',
+]
+current_rpc_index = 0
+
 DEAD_ADDRESS = '0x000000000000000000000000000000000000dEaD'
 LP_POOL_ADDRESSES = [
     '0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0',
@@ -50,8 +61,46 @@ FLAP_PORTAL_ABI = json.loads('''[
 
 FLAP_PORTAL_ADDRESS = '0xe2cE6ab80874Fa9Fa2aAE65D277Dd6B8e65C9De0'
 
-w3 = Web3(Web3.HTTPProvider(RPC_URL))
-w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+# 初始化 Web3 连接
+def create_web3(rpc_url):
+    """创建 Web3 连接"""
+    w3 = Web3(Web3.HTTPProvider(rpc_url, request_kwargs={'timeout': 30}))
+    w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+    return w3
+
+def get_web3():
+    """获取可用的 Web3 连接，自动故障转移"""
+    global current_rpc_index, w3
+    
+    # 先测试当前连接
+    try:
+        if w3.is_connected():
+            w3.eth.block_number  # 测试实际请求
+            return w3
+    except:
+        pass
+    
+    # 当前连接失败，尝试其他节点
+    for i in range(len(RPC_URLS)):
+        idx = (current_rpc_index + i) % len(RPC_URLS)
+        rpc_url = RPC_URLS[idx]
+        try:
+            new_w3 = create_web3(rpc_url)
+            if new_w3.is_connected():
+                new_w3.eth.block_number  # 测试实际请求
+                if idx != current_rpc_index:
+                    print(f"[RPC] 切换到: {rpc_url}")
+                    current_rpc_index = idx
+                    w3 = new_w3
+                return w3
+        except Exception as e:
+            print(f"[RPC] {rpc_url} 不可用: {e}")
+    
+    print("[RPC] 警告: 所有节点都不可用!")
+    return w3
+
+# 初始化默认连接
+w3 = create_web3(RPC_URLS[0])
 
 # 全局状态
 lottery_running = False
@@ -87,13 +136,15 @@ def save_records(state):
         json.dump(output, f)
 
 def get_bnb_balance(address):
-    return w3.from_wei(w3.eth.get_balance(address), 'ether')
+    web3 = get_web3()
+    return web3.from_wei(web3.eth.get_balance(address), 'ether')
 
 def get_top_holders(contract_address):
     """获取代币前50持仓者地址"""
+    web3 = get_web3()
     BALANCE_OF = '0x70a08231'
     all_addresses = set()
-    contract_checksum = w3.to_checksum_address(contract_address)
+    contract_checksum = web3.to_checksum_address(contract_address)
     
     # 获取多页数据以确保拿到前50名
     for page in range(1, 4):
@@ -131,10 +182,10 @@ def get_top_holders(contract_address):
         try:
             padded_addr = addr[2:].zfill(64)
             data = BALANCE_OF + padded_addr
-            result = w3.eth.call({'to': contract_checksum, 'data': data})
+            result = web3.eth.call({'to': contract_checksum, 'data': data})
             balance = int(result.hex(), 16)
             if balance >= 1000 * 10**18:
-                holders.append((w3.to_checksum_address(addr), balance))
+                holders.append((web3.to_checksum_address(addr), balance))
         except:
             pass
     
@@ -160,38 +211,40 @@ def send_dividend(config, amount_bnb, to_address, nonce=None, max_retries=3):
     Returns:
         成功返回 (result_dict, used_nonce)，失败返回 (None, nonce)
     """
+    web3 = get_web3()
     wallet = config['wallet_address']
     private_key = config['private_key']
-    amount_wei = w3.to_wei(amount_bnb, 'ether')
+    amount_wei = web3.to_wei(amount_bnb, 'ether')
     last_error = None
     
     # 如果没有提供 nonce，从链上获取
     if nonce is None:
-        nonce = w3.eth.get_transaction_count(wallet, 'pending')
+        nonce = web3.eth.get_transaction_count(wallet, 'pending')
     
     for attempt in range(max_retries):
         try:
             # 每次重试前等待更长时间
             if attempt > 0:
                 time.sleep(5 + attempt * 2)
-                # 重试时重新获取 nonce（可能之前的交易失败了）
-                nonce = w3.eth.get_transaction_count(wallet, 'pending')
+                # 重试时重新获取 nonce 和 web3 连接（可能需要切换节点）
+                web3 = get_web3()
+                nonce = web3.eth.get_transaction_count(wallet, 'pending')
             
             # 每次重试增加 gas price 以加速确认
             gas_price_gwei = 3 + attempt * 2  # 3, 5, 7 gwei
             tx = {
                 'from': wallet,
-                'to': w3.to_checksum_address(to_address),
+                'to': web3.to_checksum_address(to_address),
                 'value': amount_wei,
                 'gas': 21000,
-                'gasPrice': w3.to_wei(gas_price_gwei, 'gwei'),
+                'gasPrice': web3.to_wei(gas_price_gwei, 'gwei'),
                 'nonce': nonce,
                 'chainId': 56
             }
             
-            signed_tx = w3.eth.account.sign_transaction(tx, private_key)
-            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            signed_tx = web3.eth.account.sign_transaction(tx, private_key)
+            tx_hash = web3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            receipt = web3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
             
             if receipt['status'] != 1:
                 last_error = "交易状态失败"
@@ -219,13 +272,14 @@ def send_dividend(config, amount_bnb, to_address, nonce=None, max_retries=3):
 
 def buyback_and_burn(config, amount_bnb, max_retries=3):
     """通过 Flap Portal swapExactInput 回购代币并销毁，支持重试"""
-    wallet = w3.to_checksum_address(config['wallet_address'])
+    web3 = get_web3()
+    wallet = web3.to_checksum_address(config['wallet_address'])
     private_key = config['private_key']
-    contract_address = w3.to_checksum_address(config['contract_address'])
+    contract_address = web3.to_checksum_address(config['contract_address'])
     
-    token_contract = w3.eth.contract(address=contract_address, abi=ERC20_ABI)
-    portal_contract = w3.eth.contract(address=w3.to_checksum_address(FLAP_PORTAL_ADDRESS), abi=FLAP_PORTAL_ABI)
-    amount_wei = w3.to_wei(amount_bnb, 'ether')
+    token_contract = web3.eth.contract(address=contract_address, abi=ERC20_ABI)
+    portal_contract = web3.eth.contract(address=web3.to_checksum_address(FLAP_PORTAL_ADDRESS), abi=FLAP_PORTAL_ABI)
+    amount_wei = web3.to_wei(amount_bnb, 'ether')
     
     # ========== 第一步：购买代币（带重试）==========
     tokens_bought = 0
@@ -249,22 +303,22 @@ def buyback_and_burn(config, amount_bnb, max_retries=3):
                 b''                # permitData: 空
             )
             
-            nonce = w3.eth.get_transaction_count(wallet, 'pending')
+            nonce = web3.eth.get_transaction_count(wallet, 'pending')
             gas_price_gwei = 3 + attempt * 2  # 3, 5, 7 gwei
             
             buy_tx = portal_contract.functions.swapExactInput(swap_params).build_transaction({
                 'from': wallet,
                 'value': amount_wei,
                 'gas': 300000,
-                'gasPrice': w3.to_wei(gas_price_gwei, 'gwei'),
+                'gasPrice': web3.to_wei(gas_price_gwei, 'gwei'),
                 'nonce': nonce
             })
             
-            signed_buy = w3.eth.account.sign_transaction(buy_tx, private_key)
-            buy_hash = w3.eth.send_raw_transaction(signed_buy.raw_transaction)
+            signed_buy = web3.eth.account.sign_transaction(buy_tx, private_key)
+            buy_hash = web3.eth.send_raw_transaction(signed_buy.raw_transaction)
             print(f"  购买交易: {buy_hash.hex()} (nonce={nonce}, gas={gas_price_gwei}gwei)")
             
-            buy_receipt = w3.eth.wait_for_transaction_receipt(buy_hash, timeout=120)
+            buy_receipt = web3.eth.wait_for_transaction_receipt(buy_hash, timeout=120)
             if buy_receipt['status'] != 1:
                 print(f"  购买交易失败! status={buy_receipt['status']}")
                 continue
@@ -298,7 +352,7 @@ def buyback_and_burn(config, amount_bnb, max_retries=3):
                 time.sleep(5 + attempt * 2)
                 print(f"  销毁重试 {attempt+1}/{max_retries}...")
             
-            nonce = w3.eth.get_transaction_count(wallet, 'pending')
+            nonce = web3.eth.get_transaction_count(wallet, 'pending')
             gas_price_gwei = 3 + attempt * 2
             
             burn_tx = token_contract.functions.transfer(
@@ -306,15 +360,15 @@ def buyback_and_burn(config, amount_bnb, max_retries=3):
             ).build_transaction({
                 'from': wallet,
                 'gas': 100000,
-                'gasPrice': w3.to_wei(gas_price_gwei, 'gwei'),
+                'gasPrice': web3.to_wei(gas_price_gwei, 'gwei'),
                 'nonce': nonce
             })
             
-            signed_burn = w3.eth.account.sign_transaction(burn_tx, private_key)
-            burn_hash = w3.eth.send_raw_transaction(signed_burn.raw_transaction)
+            signed_burn = web3.eth.account.sign_transaction(burn_tx, private_key)
+            burn_hash = web3.eth.send_raw_transaction(signed_burn.raw_transaction)
             print(f"  销毁交易: {burn_hash.hex()} (nonce={nonce}, gas={gas_price_gwei}gwei)")
             
-            receipt = w3.eth.wait_for_transaction_receipt(burn_hash, timeout=120)
+            receipt = web3.eth.wait_for_transaction_receipt(burn_hash, timeout=120)
             if receipt['status'] != 1:
                 print(f"  销毁交易失败! status={receipt['status']}")
                 continue
@@ -399,7 +453,8 @@ def execute_lottery():
             print(f"  [前30名均分] 总额: {dividend_amount:.6f} BNB, 每人: {per_person:.6f} BNB")
             
             # 获取初始 nonce，后续手动递增避免 nonce too low 错误
-            current_nonce = w3.eth.get_transaction_count(config['wallet_address'], 'pending')
+            web3 = get_web3()
+            current_nonce = web3.eth.get_transaction_count(config['wallet_address'], 'pending')
             print(f"  初始 nonce: {current_nonce}")
             
             for i, (holder_addr, _) in enumerate(top30):
@@ -418,7 +473,7 @@ def execute_lottery():
         print(f"  成功发送 {len(dividend_results)} 笔，共 {total_sent:.6f} BNB")
         
         # 保存状态
-        state['last_block'] = w3.eth.block_number
+        state['last_block'] = get_web3().eth.block_number
         save_state(state)
         save_records(state)
         

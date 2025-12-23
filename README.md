@@ -115,6 +115,11 @@ systemctl start bsc-api
 
 ### 2025-12-23 BUG 修复
 
+**RPC 故障转移：**
+- 支持 7 个 BSC RPC 节点自动切换
+- 节点故障时自动尝试下一个节点
+- 避免单一节点被限流导致服务中断
+
 **分红功能：**
 - 修复 `nonce too low` 错误：批量发送30笔分红时手动管理 nonce 递增
 - 提高 gas price：从 1 gwei 改为 3→5→7 gwei 递增重试
