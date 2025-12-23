@@ -111,6 +111,24 @@ systemctl start bsc-api
 2. 代币必须是 Flap.sh 平台创建的（使用 Flap Portal 回购）
 3. 私钥仅存储在本地 config.json，不会上传
 
+## 更新日志
+
+### 2025-12-23 BUG 修复
+
+**分红功能：**
+- 修复 `nonce too low` 错误：批量发送30笔分红时手动管理 nonce 递增
+- 提高 gas price：从 1 gwei 改为 3→5→7 gwei 递增重试
+- 增加重试间隔：从 3 秒改为 5→7→9 秒递增
+- 增加详细错误日志：打印 nonce、gas price、目标地址
+
+**回购功能：**
+- 新增重试机制：购买和销毁都支持 3 次重试
+- 动态 gas price：3→5→7 gwei 递增
+- 增加详细异常日志
+
+**前端优化：**
+- 状态轮询间隔从 1 秒改为 2 秒，减少服务器压力
+
 ## License
 
 MIT
