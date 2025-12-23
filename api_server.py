@@ -131,6 +131,53 @@ lottery_running = False
 last_execution_time = 0
 INTERVAL_SECONDS = 5 * 60  # 每轮间隔 5 分钟
 
+# 实时进度状态
+current_progress = {
+    'running': False,
+    'phase': 'idle',  # idle, dividend, buyback
+    'step': '',
+    'current': 0,
+    'total': 0,
+    'logs': [],  # 实时日志
+    'started_at': 0,
+    'updated_at': 0
+}
+_progress_lock = threading.Lock()
+
+def update_progress(phase=None, step=None, current=None, total=None, log=None, running=None):
+    """更新实时进度（线程安全）"""
+    with _progress_lock:
+        if running is not None:
+            current_progress['running'] = running
+        if phase is not None:
+            current_progress['phase'] = phase
+        if step is not None:
+            current_progress['step'] = step
+        if current is not None:
+            current_progress['current'] = current
+        if total is not None:
+            current_progress['total'] = total
+        if log is not None:
+            current_progress['logs'].append({
+                'time': int(time.time()),
+                'msg': log
+            })
+            # 只保留最近20条日志
+            current_progress['logs'] = current_progress['logs'][-20:]
+        current_progress['updated_at'] = int(time.time())
+
+def reset_progress():
+    """重置进度状态"""
+    with _progress_lock:
+        current_progress['running'] = False
+        current_progress['phase'] = 'idle'
+        current_progress['step'] = ''
+        current_progress['current'] = 0
+        current_progress['total'] = 0
+        current_progress['logs'] = []
+        current_progress['started_at'] = 0
+        current_progress['updated_at'] = int(time.time())
+
 def load_config():
     if CONFIG_FILE.exists():
         with open(CONFIG_FILE) as f:
@@ -512,10 +559,16 @@ def execute_lottery():
     logger.info("开始执行回购分红")
     logger.info("=" * 50)
     
+    # 初始化进度
+    update_progress(running=True, phase='init', step='初始化...', current=0, total=100, log='开始执行新一轮分红')
+    current_progress['started_at'] = int(time.time())
+    current_progress['logs'] = []
+    
     try:
         config = load_config()
         if not config:
             logger.error("错误: 配置文件不存在")
+            update_progress(log='错误: 配置文件不存在')
             return None
         
         balance = float(get_bnb_balance(config['wallet_address']))
@@ -523,9 +576,11 @@ def execute_lottery():
         available = balance - gas_reserve
         
         logger.info(f"当前余额: {balance:.6f} BNB, 可用: {available:.6f} BNB")
+        update_progress(step='检查余额', log=f'钱包余额: {balance:.6f} BNB, 可用: {available:.6f} BNB')
         
         if available <= 0:
             logger.warning("余额不足以支付 gas，跳过本轮")
+            update_progress(log='余额不足，跳过本轮')
             return None
         
         dividend_amount = available  # 100%用于分红，不回购
@@ -537,10 +592,9 @@ def execute_lottery():
         
         result = {'timestamp': int(time.time())}
         
-        # 分红：前30名均分
-        logger.info(f"分红: {dividend_amount:.6f} BNB")
+        # 获取持仓者
+        update_progress(phase='prepare', step='获取持仓者列表...', current=5, log='正在获取持仓者列表...')
         
-        # 优先使用缓存数据，但检查缓存是否过期（超过10分钟则重新获取）
         holders = None
         cache_max_age = 10 * 60  # 10分钟
         if HOLDERS_FILE.exists():
@@ -553,8 +607,10 @@ def execute_lottery():
                     if cache_age < cache_max_age:
                         holders = [(h['address'], h['balance']) for h in data.get('holders', [])[:30]]
                         logger.info(f"  使用缓存持仓数据 ({len(holders)} 人, 缓存年龄: {cache_age}秒)")
+                        update_progress(log=f'使用缓存数据 ({len(holders)} 人)')
                     else:
                         logger.warning(f"  缓存已过期 ({cache_age}秒 > {cache_max_age}秒)，重新获取")
+                        update_progress(log='缓存已过期，重新获取')
             except Exception as e:
                 logger.warning(f"  读取缓存失败: {e}")
         
@@ -562,9 +618,11 @@ def execute_lottery():
             holders = get_top_holders(config['contract_address'])
             if holders:
                 save_holders(holders, config['contract_address'])
+                update_progress(log=f'获取到 {len(holders)} 个持仓者')
         
         if not holders:
             logger.error("  无法获取持仓者")
+            update_progress(log='错误: 无法获取持仓者')
             return None
         
         min_dividend = 0.001  # 最小分红金额，低于此不发送（节省gas）
@@ -577,6 +635,13 @@ def execute_lottery():
         if top30 and dividend_amount >= min_dividend:
             per_person = dividend_amount / len(top30)
             logger.info(f"  [前30名均分] 总额: {dividend_amount:.6f} BNB, 每人: {per_person:.6f} BNB")
+            update_progress(
+                phase='dividend', 
+                step='开始分红...', 
+                current=10, 
+                total=len(top30),
+                log=f'开始分红: {len(top30)} 人均分 {dividend_amount:.6f} BNB, 每人 {per_person:.6f} BNB'
+            )
             
             # 获取初始 nonce，后续手动递增避免 nonce too low 错误
             web3 = get_web3()
@@ -586,12 +651,22 @@ def execute_lottery():
             for i, (holder_addr, holder_balance) in enumerate(top30):
                 if per_person < min_dividend:
                     continue
+                
+                # 更新进度
+                short_addr = holder_addr[:6] + '...' + holder_addr[-4:]
+                update_progress(
+                    step=f'发送分红 {i+1}/{len(top30)}',
+                    current=i+1,
+                    log=f'[{i+1}/{len(top30)}] 发送给 {short_addr}...'
+                )
+                
                 div_result, current_nonce = send_dividend(config, per_person, holder_addr, nonce=current_nonce)
                 if div_result:
                     dividend_results.append(div_result)
                     state['dividend'].insert(0, div_result)
                     total_sent += per_person
                     logger.info(f"  [{i+1}/{len(top30)}] 发送成功: {holder_addr[:10]}... -> {per_person:.6f} BNB")
+                    update_progress(log=f'✓ {short_addr} 成功 +{per_person:.6f} BNB')
                 else:
                     # 记录失败的分红
                     failed_record = {
@@ -604,6 +679,7 @@ def execute_lottery():
                     failed_dividends.append(failed_record)
                     state['failed_dividends'].insert(0, failed_record)
                     logger.warning(f"  [{i+1}/{len(top30)}] 发送失败: {holder_addr[:10]}...")
+                    update_progress(log=f'✗ {short_addr} 失败')
         
         # 限制记录数量
         state['dividend'] = state['dividend'][:100]
@@ -612,7 +688,12 @@ def execute_lottery():
         result['dividend_count'] = len(dividend_results)
         result['dividend_total'] = total_sent
         result['failed_count'] = len(failed_dividends)
-        logger.info(f"  成功发送 {len(dividend_results)} 笔，共 {total_sent:.6f} BNB，失败 {len(failed_dividends)} 笔")
+        
+        summary = f'分红完成: 成功 {len(dividend_results)} 笔，共 {total_sent:.6f} BNB'
+        if len(failed_dividends) > 0:
+            summary += f'，失败 {len(failed_dividends)} 笔'
+        logger.info(f"  {summary}")
+        update_progress(phase='done', step='分红完成', current=len(top30), log=summary)
         
         # 保存状态
         state['last_block'] = get_web3().eth.block_number
@@ -621,15 +702,18 @@ def execute_lottery():
         
         last_execution_time = int(time.time())
         logger.info("本轮执行完成!")
+        update_progress(log='本轮执行完成，等待下一轮')
         return result
         
     except Exception as e:
         logger.error(f"执行失败: {e}")
+        update_progress(log=f'执行异常: {e}')
         import traceback
         traceback.print_exc()
         return None
     finally:
         lottery_running = False
+        update_progress(running=False)
 
 def get_countdown():
     """获取距离下次执行的倒计时（秒）- 基于上次完成时间"""
@@ -706,6 +790,12 @@ def index():
 @app.route('/<path:filename>')
 def static_files(filename):
     return send_from_directory('.', filename)
+
+@app.route('/api/progress', methods=['GET'])
+def api_progress():
+    """获取实时执行进度"""
+    with _progress_lock:
+        return jsonify(current_progress.copy())
 
 @app.route('/api/status', methods=['GET'])
 def api_status():
