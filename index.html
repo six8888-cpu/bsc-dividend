@@ -671,7 +671,7 @@
             <div class="stat-card">
                 <div class="stat-label" id="countdown-label">下次分红</div>
                 <div class="stat-value countdown" id="countdown">--:--</div>
-                <div class="stat-unit" id="countdown-unit">每5分钟自动分红</div>
+                <div class="stat-unit" id="countdown-unit">余额≥0.5 BNB时自动分红</div>
             </div>
         </div>
         
@@ -697,7 +697,7 @@
             <div class="feature">
                 <div class="feature-icon">💰</div>
                 <div class="feature-title">100% 自动分红</div>
-                <div class="feature-desc">每5分钟自动执行</div>
+                <div class="feature-desc">余额≥0.5 BNB触发</div>
             </div>
             <div class="feature">
                 <div class="feature-icon">🏆</div>
@@ -908,8 +908,8 @@
                     }
                 } else {
                     // 正常模式
-                    countdownLabel.textContent = '下次分红';
-                    countdownUnit.textContent = '每5分钟自动分红';
+                    countdownLabel.textContent = '下次检查';
+                    countdownUnit.textContent = '余额≥0.5 BNB时自动分红';
                     countdownEl.style.color = '';
                     
                     if (data.countdown !== undefined) {
@@ -1046,12 +1046,6 @@
                     buybackStatus.textContent = '实时';
                     buybackStatus.className = 'record-status live';
                     
-                    // Hide realtime logs after a delay
-                    if (data.phase !== 'done') {
-                        dividendRealtimeLogs.style.display = 'none';
-                        buybackRealtimeLogs.style.display = 'none';
-                    }
-                    
                     // Show completion or hide progress section
                     const hasLogs = (data.dividend_logs && data.dividend_logs.length > 0) || (data.buyback_logs && data.buyback_logs.length > 0);
                     if (data.phase === 'done' && hasLogs) {
@@ -1060,8 +1054,24 @@
                         stepEl.textContent = '等待下一轮';
                         barEl.style.width = '100%';
                         barEl.textContent = '完成';
+                        
+                        // 执行完成后也显示日志
+                        if (data.dividend_logs && data.dividend_logs.length > 0) {
+                            dividendRealtimeLogs.style.display = 'block';
+                            dividendRealtimeLogs.querySelector('.realtime-logs-inner').innerHTML = renderLogs(data.dividend_logs);
+                        }
+                        if (data.buyback_logs && data.buyback_logs.length > 0) {
+                            buybackRealtimeLogs.style.display = 'block';
+                            buybackRealtimeLogs.querySelector('.realtime-logs-inner').innerHTML = renderLogs(data.buyback_logs);
+                        }
+                        
+                        // Combined logs for progress section
+                        const allLogs = [...(data.dividend_logs || []), ...(data.buyback_logs || [])].sort((a,b) => a.time - b.time);
+                        logsEl.innerHTML = renderLogs(allLogs).replace(/log-item/g, 'progress-log-item').replace(/log-time/g, 'progress-log-time');
                     } else {
                         section.classList.remove('active');
+                        dividendRealtimeLogs.style.display = 'none';
+                        buybackRealtimeLogs.style.display = 'none';
                     }
                 }
             } catch (e) {
