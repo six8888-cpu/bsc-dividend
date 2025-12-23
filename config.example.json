@@ -1,0 +1,5 @@
+{
+    "wallet_address": "0x你的钱包地址",
+    "private_key": "你的私钥（不要泄露）",
+    "contract_address": "0x代币合约地址"
+}

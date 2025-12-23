@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BSC 大乐透 | 全自动分红</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0a0f;
+            min-height: 100vh;
+            color: #e0e0e0;
+            overflow-x: hidden;
+        }
+        
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+                radial-gradient(ellipse at 20% 20%, rgba(120, 0, 255, 0.15) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(255, 0, 128, 0.1) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 50%, rgba(0, 200, 255, 0.05) 0%, transparent 70%);
+            pointer-events: none;
+            z-index: 0;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            padding: 20px;
+            position: relative;
+            z-index: 1;
+        }
+        
+        /* Header */
+        .header {
+            text-align: center;
+            padding: 40px 0;
+        }
+        
+        .logo {
+            font-family: 'Orbitron', monospace;
+            font-size: 48px;
+            font-weight: 900;
+            background: linear-gradient(135deg, #00f5ff, #ff00aa, #ffaa00);
+            background-size: 200% 200%;
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: gradientShift 3s ease infinite;
+            text-shadow: 0 0 40px rgba(0, 245, 255, 0.3);
+        }
+        
+        @keyframes gradientShift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+        
+        .tagline {
+            color: #888;
+            margin-top: 10px;
+            font-size: 14px;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+        }
+        
+        /* Contract Address */
+        .ca-card {
+            background: linear-gradient(135deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02));
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 24px;
+            text-align: center;
+            backdrop-filter: blur(10px);
+        }
+        
+        .ca-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 8px;
+        }
+        
+        .ca-address {
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            color: #00f5ff;
+            word-break: break-all;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .ca-address:hover {
+            color: #fff;
+            text-shadow: 0 0 10px #00f5ff;
+        }
+        
+        /* Main Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+        
+        @media (max-width: 600px) {
+            .stats-grid { grid-template-columns: 1fr; }
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.02));
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 20px;
+            padding: 30px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .stat-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, #00f5ff, #ff00aa);
+        }
+        
+        .stat-label {
+            font-size: 13px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 12px;
+        }
+        
+        .stat-value {
+            font-family: 'Orbitron', monospace;
+            font-size: 42px;
+            font-weight: 700;
+            color: #fff;
+        }
+        
+        .stat-value.balance {
+            color: #00f5ff;
+            text-shadow: 0 0 30px rgba(0, 245, 255, 0.5);
+        }
+        
+        .stat-value.countdown {
+            color: #ff00aa;
+            text-shadow: 0 0 30px rgba(255, 0, 170, 0.5);
+        }
+        
+        .stat-unit {
+            font-size: 14px;
+            color: #666;
+            margin-top: 8px;
+        }
+        
+        /* Features */
+        .features {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+        
+        @media (max-width: 600px) {
+            .features { grid-template-columns: 1fr; }
+        }
+        
+        .feature {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px;
+            padding: 20px;
+            text-align: center;
+        }
+        
+        .feature-icon {
+            font-size: 32px;
+            margin-bottom: 12px;
+        }
+        
+        .feature-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: #fff;
+            margin-bottom: 6px;
+        }
+        
+        .feature-desc {
+            font-size: 12px;
+            color: #666;
+        }
+        
+        /* Holders Section */
+        .holders-section {
+            background: linear-gradient(135deg, rgba(120,0,255,0.1), rgba(255,0,170,0.05));
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 20px;
+            padding: 30px;
+            margin-bottom: 24px;
+        }
+        
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+        
+        .section-title {
+            font-size: 18px;
+            font-weight: 600;
+            color: #fff;
+        }
+        
+        .section-badge {
+            background: rgba(255,0,170,0.2);
+            color: #ff00aa;
+            padding: 6px 14px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+        }
+        
+        .holders-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+        }
+        
+        @media (max-width: 768px) {
+            .holders-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+        
+        .holder-item {
+            background: rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.05);
+            border-radius: 10px;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 11px;
+            color: #aaa;
+            transition: all 0.3s;
+        }
+        
+        .holder-item:hover {
+            border-color: #ff00aa;
+            color: #fff;
+        }
+        
+        .holder-rank {
+            color: #ff00aa;
+            font-weight: bold;
+        }
+        
+        .holder-balance {
+            display: block;
+            color: #00f5ff;
+            font-size: 10px;
+            margin-top: 4px;
+        }
+        
+        /* Winner Card */
+        .winner-card {
+            background: linear-gradient(135deg, rgba(255,170,0,0.15), rgba(255,100,0,0.1));
+            border: 1px solid rgba(255,170,0,0.3);
+            border-radius: 16px;
+            padding: 24px;
+            margin-top: 20px;
+            text-align: center;
+        }
+        
+        .winner-label {
+            font-size: 12px;
+            color: #ffaa00;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            margin-bottom: 10px;
+        }
+        
+        .winner-address {
+            font-family: monospace;
+            font-size: 14px;
+            color: #fff;
+            word-break: break-all;
+            margin-bottom: 8px;
+        }
+        
+        .winner-amount {
+            font-family: 'Orbitron', monospace;
+            font-size: 24px;
+            font-weight: 700;
+            color: #00ff88;
+        }
+        
+        .winner-time {
+            font-size: 12px;
+            color: #666;
+            margin-top: 8px;
+        }
+        
+        .winner-status {
+            font-size: 12px;
+            color: #888;
+            margin-top: 10px;
+        }
+        
+        /* Records */
+        .records-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 24px;
+        }
+        
+        @media (max-width: 600px) {
+            .records-grid { grid-template-columns: 1fr; }
+        }
+        
+        .record-card {
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 16px;
+            padding: 24px;
+        }
+        
+        .record-card.dividend { border-top: 3px solid #ff00aa; }
+        .record-card.buyback { border-top: 3px solid #00f5ff; }
+        
+        .record-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        
+        .record-icon {
+            font-size: 24px;
+        }
+        
+        .record-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #fff;
+        }
+        
+        .record-list {
+            max-height: 200px;
+            overflow: hidden;
+        }
+        
+        .record-list-inner {
+            animation: scrollUp 12s linear infinite;
+        }
+        
+        .record-list:hover .record-list-inner {
+            animation-play-state: paused;
+        }
+        
+        @keyframes scrollUp {
+            0% { transform: translateY(0); }
+            100% { transform: translateY(-50%); }
+        }
+        
+        .record-item {
+            background: rgba(0,0,0,0.2);
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 8px;
+            font-size: 12px;
+        }
+        
+        .record-time {
+            color: #555;
+            font-size: 11px;
+            display: block;
+            margin-bottom: 4px;
+        }
+        
+        .record-address {
+            color: #ff00aa;
+        }
+        
+        .record-amount {
+            color: #00ff88;
+            font-weight: 600;
+        }
+        
+        .record-link {
+            color: #00f5ff;
+            text-decoration: none;
+            opacity: 0.7;
+        }
+        
+        .record-link:hover {
+            opacity: 1;
+        }
+        
+        .record-empty {
+            text-align: center;
+            color: #444;
+            padding: 20px;
+        }
+        
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 30px;
+            border-top: 1px solid rgba(255,255,255,0.05);
+            margin-top: 20px;
+        }
+        
+        .social-links {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 16px;
+        }
+        
+        .social-link {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            color: #888;
+            text-decoration: none;
+            padding: 10px 20px;
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 30px;
+            transition: all 0.3s;
+        }
+        
+        .social-link:hover {
+            color: #fff;
+            border-color: #ff00aa;
+            background: rgba(255,0,170,0.1);
+        }
+        
+        .footer-text {
+            font-size: 12px;
+            color: #444;
+        }
+        
+        .tax-info {
+            display: inline-block;
+            background: rgba(255,255,255,0.05);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            color: #888;
+            margin-top: 12px;
+        }
+        
+        /* Loading */
+        .loading {
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <div class="header">
+            <div class="logo">BSC 大乐透</div>
+            <div class="tagline">全自动回购 · 随机分红 · 公开透明</div>
+        </div>
+        
+        <!-- Contract Address -->
+        <div class="ca-card">
+            <div class="ca-label">合约地址</div>
+            <div class="ca-address" onclick="navigator.clipboard.writeText('0x9bb72f4568157dad11a3f759ef4934bae1667777')">
+                0x9bb72f4568157dad11a3f759ef4934bae1667777
+            </div>
+        </div>
+        
+        <!-- Stats -->
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">奖池余额</div>
+                <div class="stat-value balance" id="balance">--</div>
+                <div class="stat-unit">BNB</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">下次开奖</div>
+                <div class="stat-value countdown" id="countdown">--:--</div>
+                <div class="stat-unit">每20分钟自动开奖</div>
+            </div>
+        </div>
+        
+        <!-- Features -->
+        <div class="features">
+            <div class="feature">
+                <div class="feature-icon">🔥</div>
+                <div class="feature-title">50% 回购销毁</div>
+                <div class="feature-desc">自动通缩，币价上涨</div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">🎰</div>
+                <div class="feature-title">50% 随机分红</div>
+                <div class="feature-desc">单人独享全部奖池</div>
+            </div>
+            <div class="feature">
+                <div class="feature-icon">⚡</div>
+                <div class="feature-title">全自动执行</div>
+                <div class="feature-desc">合约驱动，无人干预</div>
+            </div>
+        </div>
+        
+        <!-- Holders -->
+        <div class="holders-section">
+            <div class="section-header">
+                <div class="section-title">🏆 持仓排行 TOP</div>
+                <div class="section-badge">参与抽奖</div>
+            </div>
+            <div class="holders-grid" id="lottery-candidates">
+                <div class="record-empty">加载中...</div>
+            </div>
+            
+            <div class="winner-card" id="lottery-result" style="display:none;">
+                <div class="winner-label">🎉 最近中奖</div>
+                <div class="winner-address" id="lottery-winner"></div>
+                <div class="winner-amount" id="lottery-amount"></div>
+                <div class="winner-time" id="lottery-time"></div>
+                <div class="winner-status" id="lottery-status"></div>
+            </div>
+        </div>
+        
+        <!-- Records -->
+        <div class="records-grid">
+            <div class="record-card dividend">
+                <div class="record-header">
+                    <span class="record-icon">💎</span>
+                    <span class="record-title">分红记录</span>
+                </div>
+                <div class="record-list" id="dividend-records">
+                    <div class="record-list-inner">
+                        <div class="record-empty">暂无记录</div>
+                    </div>
+                </div>
+            </div>
+            <div class="record-card buyback">
+                <div class="record-header">
+                    <span class="record-icon">🔥</span>
+                    <span class="record-title">回购销毁</span>
+                </div>
+                <div class="record-list" id="buyback-records">
+                    <div class="record-list-inner">
+                        <div class="record-empty">暂无记录</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="footer">
+            <div class="social-links">
+                <a href="https://x.com/DaLeTou_bsc" target="_blank" class="social-link">
+                    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+                    Twitter
+                </a>
+            </div>
+            <div class="tax-info">税率: 10% / 10%</div>
+            <div class="footer-text" style="margin-top:12px;">机制写入合约 · 全自动执行 · 无法篡改</div>
+        </div>
+    </div>
+
+    <script>
+        const WALLET_ADDRESS = '0x6dad867551448dfad8775d4a2f78c12e200c6027';
+        const CONTRACT_ADDRESS = '0x9bb72f4568157dad11a3f759ef4934bae1667777';
+        const BSC_RPC_URL = 'https://bsc-dataseed.binance.org/';
+        
+        async function getBalance() {
+            try {
+                const response = await fetch(BSC_RPC_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        jsonrpc: '2.0',
+                        method: 'eth_getBalance',
+                        params: [WALLET_ADDRESS, 'latest'],
+                        id: 1
+                    })
+                });
+                const data = await response.json();
+                if (data.result) {
+                    const balanceWei = parseInt(data.result, 16);
+                    const balanceBNB = (balanceWei / 1e18).toFixed(4);
+                    document.getElementById('balance').textContent = balanceBNB;
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        function formatTime(timestamp) {
+            if (!timestamp) return '';
+            const date = new Date(timestamp * 1000);
+            return `${date.getMonth()+1}-${date.getDate()} ${String(date.getHours()).padStart(2,'0')}:${String(date.getMinutes()).padStart(2,'0')}`;
+        }
+
+        async function fetchRecords() {
+            try {
+                const response = await fetch('/records.json?' + Date.now());
+                const data = await response.json();
+                
+                if (data.dividend && data.dividend.length > 0) {
+                    let html = '';
+                    for (const r of data.dividend) {
+                        html += `<div class="record-item">
+                            <span class="record-time">${formatTime(r.timestamp)}</span>
+                            <span class="record-address">${r.address}</span> 
+                            <span class="record-amount">+${r.amount.toFixed(4)} BNB</span>
+                            <a href="https://bscscan.com/tx/${r.tx_hash}" target="_blank" class="record-link">↗</a>
+                        </div>`;
+                    }
+                    if (data.dividend.length > 3) html += html;
+                    document.querySelector('#dividend-records .record-list-inner').innerHTML = html;
+                }
+                
+                if (data.buyback && data.buyback.length > 0) {
+                    let html = '';
+                    for (const r of data.buyback) {
+                        html += `<div class="record-item">
+                            <span class="record-time">${formatTime(r.timestamp)}</span>
+                            <span class="record-amount">销毁 ${r.amount.toLocaleString('en-US',{maximumFractionDigits:0})} 枚</span>
+                            <a href="https://bscscan.com/tx/${r.tx_hash}" target="_blank" class="record-link">↗</a>
+                        </div>`;
+                    }
+                    if (data.buyback.length > 3) html += html;
+                    document.querySelector('#buyback-records .record-list-inner').innerHTML = html;
+                }
+            } catch (e) {}
+        }
+
+        let holdersFetching = false;
+        
+        async function fetchHolders() {
+            if (holdersFetching) return;
+            holdersFetching = true;
+            try {
+                const response = await fetch('/api/holders');
+                const data = await response.json();
+                if (data.holders && data.holders.length > 0) {
+                    showHolders(data.holders);
+                }
+            } catch (e) {
+                try {
+                    const response = await fetch('/holders.json?' + Date.now());
+                    const data = await response.json();
+                    if (data.holders) showHolders(data.holders);
+                } catch (e) {}
+            }
+            holdersFetching = false;
+        }
+        
+        function showHolders(holders) {
+            const el = document.getElementById('lottery-candidates');
+            let html = '';
+            holders.forEach((h, i) => {
+                const addr = h.address.slice(0,6) + '...' + h.address.slice(-4);
+                const bal = Number(h.balance).toLocaleString('en-US', {maximumFractionDigits: 0});
+                html += `<div class="holder-item" title="${h.address}">
+                    <span class="holder-rank">#${i+1}</span> ${addr}
+                    <span class="holder-balance">${bal} 枚</span>
+                </div>`;
+            });
+            el.innerHTML = html;
+        }
+        
+        let lastResultTimestamp = 0;
+        
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/status');
+                const data = await response.json();
+                
+                if (data.countdown !== undefined) {
+                    const m = Math.floor(data.countdown / 60);
+                    const s = data.countdown % 60;
+                    document.getElementById('countdown').textContent = 
+                        String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+                }
+                
+                if (data.last_result && data.last_result.timestamp > lastResultTimestamp) {
+                    lastResultTimestamp = data.last_result.timestamp;
+                    showLotteryResult(data.last_result);
+                    getBalance();
+                    fetchRecords();
+                    fetchHolders();
+                }
+            } catch (e) {}
+        }
+        
+        function showLotteryResult(data) {
+            const result = document.getElementById('lottery-result');
+            result.style.display = 'block';
+            document.getElementById('lottery-winner').textContent = data.winner_full_address;
+            document.getElementById('lottery-amount').textContent = '+' + (data.dividend_amount || data.amount || 0).toFixed(6) + ' BNB';
+            document.getElementById('lottery-time').textContent = formatTime(data.timestamp);
+            
+            let msg = '';
+            if (data.buyback_amount > 0) {
+                msg = `同时销毁 ${data.buyback_amount.toLocaleString('en-US',{maximumFractionDigits:0})} 枚代币`;
+            }
+            document.getElementById('lottery-status').textContent = msg;
+        }
+
+        // Init
+        getBalance();
+        fetchRecords();
+        fetchHolders();
+        fetchStatus();
+        
+        setInterval(getBalance, 10000);
+        setInterval(fetchRecords, 30000);
+        setInterval(fetchStatus, 1000);
+        setInterval(fetchHolders, 60000);  // 60秒刷新一次持仓者
+    </script>
+</body>
+</html>
