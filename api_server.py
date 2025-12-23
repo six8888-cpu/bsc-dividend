@@ -24,7 +24,7 @@ STATE_FILE = BASE_DIR / 'state.json'
 HOLDERS_FILE = BASE_DIR / 'holders.json'
 RECORDS_FILE = BASE_DIR / 'records.json'
 
-RPC_URL = 'https://bsc-dataseed.binance.org/'
+RPC_URL = 'https://bsc-rpc.publicnode.com'
 DEAD_ADDRESS = '0x000000000000000000000000000000000000dEaD'
 LP_POOL_ADDRESSES = [
     '0xe2ce6ab80874fa9fa2aae65d277dd6b8e65c9de0',
@@ -152,141 +152,188 @@ def save_holders(holders, contract_address):
         json.dump(output, f, indent=2)
     return output
 
-def send_dividend(config, amount_bnb, to_address):
-    """发送 BNB 分红"""
-    try:
-        wallet = config['wallet_address']
-        private_key = config['private_key']
-        amount_wei = w3.to_wei(amount_bnb, 'ether')
-        
-        nonce = w3.eth.get_transaction_count(wallet)
-        tx = {
-            'from': wallet,
-            'to': w3.to_checksum_address(to_address),
-            'value': amount_wei,
-            'gas': 21000,
-            'gasPrice': w3.to_wei('3', 'gwei'),
-            'nonce': nonce
-        }
-        
-        signed_tx = w3.eth.account.sign_transaction(tx, private_key)
-        tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
-        
-        if receipt['status'] != 1:
-            return None
-        
-        tx_hash_str = tx_hash.hex()
-        if not tx_hash_str.startswith('0x'):
-            tx_hash_str = '0x' + tx_hash_str
-        
-        return {
-            'address': to_address[:6] + '...' + to_address[-4:],
-            'full_address': to_address,
-            'amount': amount_bnb,
-            'tx_hash': tx_hash_str,
-            'block': receipt['blockNumber'],
-            'timestamp': int(time.time())
-        }
-    except Exception as e:
-        print(f"分红失败: {e}")
-        return None
-
-def buyback_and_burn(config, amount_bnb):
-    """通过 Flap Portal swapExactInput 回购代币并销毁"""
-    try:
-        wallet = w3.to_checksum_address(config['wallet_address'])
-        private_key = config['private_key']
-        contract_address = w3.to_checksum_address(config['contract_address'])
-        
-        token_contract = w3.eth.contract(address=contract_address, abi=ERC20_ABI)
-        portal_contract = w3.eth.contract(address=w3.to_checksum_address(FLAP_PORTAL_ADDRESS), abi=FLAP_PORTAL_ABI)
-        amount_wei = w3.to_wei(amount_bnb, 'ether')
-        
-        # 记录购买前余额
-        balance_before = token_contract.functions.balanceOf(wallet).call()
-        print(f"  购买前余额: {balance_before / 1e18:,.2f} 枚")
-        
-        # 使用 Flap Portal swapExactInput 购买代币
-        # inputToken = 0x0 (BNB), outputToken = 代币地址
-        ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
-        swap_params = (
-            ZERO_ADDRESS,      # inputToken: BNB
-            contract_address,  # outputToken: 代币
-            amount_wei,        # inputAmount
-            0,                 # minOutputAmount: 0 表示接受任意数量
-            b''                # permitData: 空
-        )
-        
-        nonce = w3.eth.get_transaction_count(wallet)
-        buy_tx = portal_contract.functions.swapExactInput(swap_params).build_transaction({
-            'from': wallet,
-            'value': amount_wei,
-            'gas': 300000,
-            'gasPrice': w3.to_wei('3', 'gwei'),
-            'nonce': nonce
-        })
-        
-        signed_buy = w3.eth.account.sign_transaction(buy_tx, private_key)
-        buy_hash = w3.eth.send_raw_transaction(signed_buy.raw_transaction)
-        print(f"  购买交易: {buy_hash.hex()}")
-        
-        receipt = w3.eth.wait_for_transaction_receipt(buy_hash, timeout=120)
-        if receipt['status'] != 1:
-            print("  购买交易失败!")
-            return None
-        
-        # 从交易日志中解析获得的代币数量 (避免 RPC 缓存问题)
-        TRANSFER_TOPIC = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
-        tokens_bought = 0
-        for log in receipt['logs']:
-            if log['address'].lower() == contract_address.lower() and log['topics'][0].hex() == TRANSFER_TOPIC:
-                to_addr = "0x" + log['topics'][2].hex()[-40:]
-                if to_addr.lower() == wallet.lower():
-                    tokens_bought = int(log['data'].hex(), 16)
-                    break
-        
-        print(f"  购买成功: {tokens_bought / 1e18:,.2f} 枚")
-        
-        # 只销毁本次购买的代币
-        if tokens_bought <= 0:
-            print("  未获得代币!")
-            return None
+def send_dividend(config, amount_bnb, to_address, nonce=None, max_retries=3):
+    """发送 BNB 分红，失败自动重试
+    
+    Args:
+        nonce: 如果提供则使用指定的 nonce，否则从链上获取
+    Returns:
+        成功返回 (result_dict, used_nonce)，失败返回 (None, nonce)
+    """
+    wallet = config['wallet_address']
+    private_key = config['private_key']
+    amount_wei = w3.to_wei(amount_bnb, 'ether')
+    last_error = None
+    
+    # 如果没有提供 nonce，从链上获取
+    if nonce is None:
+        nonce = w3.eth.get_transaction_count(wallet, 'pending')
+    
+    for attempt in range(max_retries):
+        try:
+            # 每次重试前等待更长时间
+            if attempt > 0:
+                time.sleep(5 + attempt * 2)
+                # 重试时重新获取 nonce（可能之前的交易失败了）
+                nonce = w3.eth.get_transaction_count(wallet, 'pending')
             
-        nonce = w3.eth.get_transaction_count(wallet)
-        burn_tx = token_contract.functions.transfer(
-            DEAD_ADDRESS, tokens_bought
-        ).build_transaction({
-            'from': wallet,
-            'gas': 100000,
-            'gasPrice': w3.to_wei('3', 'gwei'),
-            'nonce': nonce
-        })
-        
-        signed_burn = w3.eth.account.sign_transaction(burn_tx, private_key)
-        burn_hash = w3.eth.send_raw_transaction(signed_burn.raw_transaction)
-        print(f"  销毁交易: {burn_hash.hex()}")
-        
-        receipt = w3.eth.wait_for_transaction_receipt(burn_hash, timeout=120)
-        if receipt['status'] != 1:
-            return None
-        
-        tx_hash_str = burn_hash.hex()
-        if not tx_hash_str.startswith('0x'):
-            tx_hash_str = '0x' + tx_hash_str
-        
-        return {
-            'amount': tokens_bought / 1e18,
-            'tx_hash': tx_hash_str,
-            'block': receipt['blockNumber'],
-            'bnb_spent': amount_bnb,
-            'timestamp': int(time.time())
-        }
-    except Exception as e:
-        print(f"回购销毁失败: {e}")
-        import traceback
-        traceback.print_exc()
+            # 每次重试增加 gas price 以加速确认
+            gas_price_gwei = 3 + attempt * 2  # 3, 5, 7 gwei
+            tx = {
+                'from': wallet,
+                'to': w3.to_checksum_address(to_address),
+                'value': amount_wei,
+                'gas': 21000,
+                'gasPrice': w3.to_wei(gas_price_gwei, 'gwei'),
+                'nonce': nonce,
+                'chainId': 56
+            }
+            
+            signed_tx = w3.eth.account.sign_transaction(tx, private_key)
+            tx_hash = w3.eth.send_raw_transaction(signed_tx.raw_transaction)
+            receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            
+            if receipt['status'] != 1:
+                last_error = "交易状态失败"
+                continue
+            
+            tx_hash_str = tx_hash.hex()
+            if not tx_hash_str.startswith('0x'):
+                tx_hash_str = '0x' + tx_hash_str
+            
+            result = {
+                'address': to_address[:6] + '...' + to_address[-4:],
+                'full_address': to_address,
+                'amount': amount_bnb,
+                'tx_hash': tx_hash_str,
+                'block': receipt['blockNumber'],
+                'timestamp': int(time.time())
+            }
+            return (result, nonce + 1)  # 返回结果和下一个 nonce
+        except Exception as e:
+            last_error = str(e)
+            print(f"分红重试 {attempt+1}/{max_retries} (nonce={nonce}, gas={gas_price_gwei}gwei): {e}")
+    
+    print(f"分红失败: 重试{max_retries}次后仍失败, 最后错误: {last_error}, 目标地址: {to_address}")
+    return (None, nonce)
+
+def buyback_and_burn(config, amount_bnb, max_retries=3):
+    """通过 Flap Portal swapExactInput 回购代币并销毁，支持重试"""
+    wallet = w3.to_checksum_address(config['wallet_address'])
+    private_key = config['private_key']
+    contract_address = w3.to_checksum_address(config['contract_address'])
+    
+    token_contract = w3.eth.contract(address=contract_address, abi=ERC20_ABI)
+    portal_contract = w3.eth.contract(address=w3.to_checksum_address(FLAP_PORTAL_ADDRESS), abi=FLAP_PORTAL_ABI)
+    amount_wei = w3.to_wei(amount_bnb, 'ether')
+    
+    # ========== 第一步：购买代币（带重试）==========
+    tokens_bought = 0
+    buy_receipt = None
+    
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                time.sleep(5 + attempt * 2)
+                print(f"  购买重试 {attempt+1}/{max_retries}...")
+            
+            balance_before = token_contract.functions.balanceOf(wallet).call()
+            print(f"  购买前余额: {balance_before / 1e18:,.2f} 枚")
+            
+            ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+            swap_params = (
+                ZERO_ADDRESS,      # inputToken: BNB
+                contract_address,  # outputToken: 代币
+                amount_wei,        # inputAmount
+                0,                 # minOutputAmount: 0 表示接受任意数量
+                b''                # permitData: 空
+            )
+            
+            nonce = w3.eth.get_transaction_count(wallet, 'pending')
+            gas_price_gwei = 3 + attempt * 2  # 3, 5, 7 gwei
+            
+            buy_tx = portal_contract.functions.swapExactInput(swap_params).build_transaction({
+                'from': wallet,
+                'value': amount_wei,
+                'gas': 300000,
+                'gasPrice': w3.to_wei(gas_price_gwei, 'gwei'),
+                'nonce': nonce
+            })
+            
+            signed_buy = w3.eth.account.sign_transaction(buy_tx, private_key)
+            buy_hash = w3.eth.send_raw_transaction(signed_buy.raw_transaction)
+            print(f"  购买交易: {buy_hash.hex()} (nonce={nonce}, gas={gas_price_gwei}gwei)")
+            
+            buy_receipt = w3.eth.wait_for_transaction_receipt(buy_hash, timeout=120)
+            if buy_receipt['status'] != 1:
+                print(f"  购买交易失败! status={buy_receipt['status']}")
+                continue
+            
+            # 从交易日志中解析获得的代币数量
+            TRANSFER_TOPIC = "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+            for log in buy_receipt['logs']:
+                if log['address'].lower() == contract_address.lower() and log['topics'][0].hex() == TRANSFER_TOPIC:
+                    to_addr = "0x" + log['topics'][2].hex()[-40:]
+                    if to_addr.lower() == wallet.lower():
+                        tokens_bought = int(log['data'].hex(), 16)
+                        break
+            
+            if tokens_bought > 0:
+                print(f"  购买成功: {tokens_bought / 1e18:,.2f} 枚")
+                break
+            else:
+                print("  未获得代币，重试中...")
+                
+        except Exception as e:
+            print(f"  购买异常 {attempt+1}/{max_retries}: {e}")
+    
+    if tokens_bought <= 0:
+        print("  购买失败: 重试后仍未获得代币")
         return None
+    
+    # ========== 第二步：销毁代币（带重试）==========
+    for attempt in range(max_retries):
+        try:
+            if attempt > 0:
+                time.sleep(5 + attempt * 2)
+                print(f"  销毁重试 {attempt+1}/{max_retries}...")
+            
+            nonce = w3.eth.get_transaction_count(wallet, 'pending')
+            gas_price_gwei = 3 + attempt * 2
+            
+            burn_tx = token_contract.functions.transfer(
+                DEAD_ADDRESS, tokens_bought
+            ).build_transaction({
+                'from': wallet,
+                'gas': 100000,
+                'gasPrice': w3.to_wei(gas_price_gwei, 'gwei'),
+                'nonce': nonce
+            })
+            
+            signed_burn = w3.eth.account.sign_transaction(burn_tx, private_key)
+            burn_hash = w3.eth.send_raw_transaction(signed_burn.raw_transaction)
+            print(f"  销毁交易: {burn_hash.hex()} (nonce={nonce}, gas={gas_price_gwei}gwei)")
+            
+            receipt = w3.eth.wait_for_transaction_receipt(burn_hash, timeout=120)
+            if receipt['status'] != 1:
+                print(f"  销毁交易失败! status={receipt['status']}")
+                continue
+            tx_hash_str = burn_hash.hex()
+            if not tx_hash_str.startswith('0x'):
+                tx_hash_str = '0x' + tx_hash_str
+            
+            return {
+                'amount': tokens_bought / 1e18,
+                'tx_hash': tx_hash_str,
+                'block': receipt['blockNumber'],
+                'bnb_spent': amount_bnb,
+                'timestamp': int(time.time())
+            }
+        except Exception as e:
+            print(f"  销毁异常 {attempt+1}/{max_retries}: {e}")
+    
+    print(f"  销毁失败: 重试后仍失败，代币可能留在钱包中")
+    return None
 
 def execute_lottery():
     """执行一轮回购分红"""
@@ -316,64 +363,54 @@ def execute_lottery():
             print(f"余额不足以支付 gas，跳过本轮")
             return None
         
-        buyback_amount = available * 0.5
-        dividend_amount = available * 0.5
+        dividend_amount = available  # 100%用于分红，不回购
         
         state = load_state()
         result = {'timestamp': int(time.time())}
         
-        # 1. 回购销毁
-        print(f"\n[1/2] 回购销毁: {buyback_amount:.6f} BNB")
-        buyback_result = buyback_and_burn(config, buyback_amount)
-        if buyback_result:
-            state['buyback'].insert(0, buyback_result)
-            state['buyback'] = state['buyback'][:50]
-            result['buyback'] = buyback_result
-            print(f"  成功销毁 {buyback_result['amount']:,.2f} 枚")
-        
-        # 2. 分红：前20名均分(20%) + 21-100名随机一人(30%)
-        print(f"\n[2/2] 分红: {dividend_amount:.6f} BNB")
-        holders = get_top_holders(config['contract_address'])
+        # 分红：前30名均分
+        print(f"\n分红: {dividend_amount:.6f} BNB")
+        # 优先使用缓存数据，避免卡住
+        holders = None
+        if HOLDERS_FILE.exists():
+            try:
+                with open(HOLDERS_FILE) as f:
+                    data = json.load(f)
+                    holders = [(h['address'], h['balance']) for h in data.get('holders', [])[:30]]
+                    print(f"  使用缓存持仓数据 ({len(holders)} 人)")
+            except:
+                pass
+        if not holders:
+            holders = get_top_holders(config['contract_address'])
+            if holders:
+                save_holders(holders, config['contract_address'])
         if not holders:
             print("  无法获取持仓者")
             return None
-        
-        save_holders(holders, config['contract_address'])
         
         min_dividend = 0.001  # 最小分红金额，低于此不发送（节省gas）
         dividend_results = []
         total_sent = 0
         
-        # 前20名均分 40%
-        top20 = holders[:20]
-        top20_amount = dividend_amount * 0.4
-        if top20 and top20_amount >= min_dividend:
-            per_person = top20_amount / len(top20)
-            print(f"  [前20名均分] 总额: {top20_amount:.6f} BNB, 每人: {per_person:.6f} BNB")
-            for holder_addr, _ in top20:
+        # 前30名均分 100%
+        top30 = holders[:30]
+        if top30 and dividend_amount >= min_dividend:
+            per_person = dividend_amount / len(top30)
+            print(f"  [前30名均分] 总额: {dividend_amount:.6f} BNB, 每人: {per_person:.6f} BNB")
+            
+            # 获取初始 nonce，后续手动递增避免 nonce too low 错误
+            current_nonce = w3.eth.get_transaction_count(config['wallet_address'], 'pending')
+            print(f"  初始 nonce: {current_nonce}")
+            
+            for i, (holder_addr, _) in enumerate(top30):
                 if per_person < min_dividend:
                     continue
-                div_result = send_dividend(config, per_person, holder_addr)
+                div_result, current_nonce = send_dividend(config, per_person, holder_addr, nonce=current_nonce)
                 if div_result:
                     dividend_results.append(div_result)
                     state['dividend'].insert(0, div_result)
                     total_sent += per_person
-        
-        # 前100名随机抽30人分 60%（前20也参与）
-        random_total = dividend_amount * 0.6
-        pool = holders[:100]
-        if pool and random_total >= min_dividend:
-            winners = random.sample(pool, min(30, len(pool)))
-            per_winner = random_total / len(winners)
-            print(f"  [前100名随机30人] 总额: {random_total:.6f} BNB, 每人: {per_winner:.6f} BNB")
-            for winner_addr, _ in winners:
-                if per_winner < min_dividend:
-                    continue
-                div_result = send_dividend(config, per_winner, winner_addr)
-                if div_result:
-                    dividend_results.append(div_result)
-                    state['dividend'].insert(0, div_result)
-                    total_sent += per_winner
+                    print(f"  [{i+1}/{len(top30)}] 发送成功: {holder_addr[:10]}... -> {per_person:.6f} BNB")
         
         state['dividend'] = state['dividend'][:100]
         result['dividend_count'] = len(dividend_results)
@@ -405,17 +442,45 @@ def get_countdown():
     remaining = (4 - minutes) * 60 + (59 - seconds)
     return remaining
 
+last_holders_update = 0
+holders_updating = False
+
+def update_holders_cache():
+    """更新持仓缓存（在单独线程中运行）"""
+    global last_holders_update, holders_updating
+    if holders_updating:
+        return
+    holders_updating = True
+    try:
+        config = load_config()
+        if config:
+            print(f"[{time.strftime('%H:%M:%S')}] 更新持仓缓存...")
+            holders = get_top_holders(config['contract_address'])
+            if holders:
+                save_holders(holders, config['contract_address'])
+                print(f"  已更新 {len(holders)} 个持仓者")
+            last_holders_update = int(time.time())
+    except Exception as e:
+        print(f"更新持仓失败: {e}")
+    finally:
+        holders_updating = False
+
 def background_scheduler():
     """后台定时任务"""
-    global last_execution_time
+    global last_execution_time, last_holders_update
     print("后台调度器已启动")
     
     while True:
+        current_time = int(time.time())
+        
+        # 每2分钟在后台线程更新持仓缓存（不阻塞分红）
+        if current_time - last_holders_update >= 2 * 60 and not holders_updating:
+            threading.Thread(target=update_holders_cache, daemon=True).start()
+        
         remaining = get_countdown()
         
-        # 倒计时归零时执行
+        # 倒计时归零时执行分红
         if remaining <= 1:
-            current_time = int(time.time())
             # 防止重复执行（冷却4分钟）
             if current_time - last_execution_time >= 4 * 60:
                 execute_lottery()
@@ -446,23 +511,9 @@ def api_status():
 
 @app.route('/api/holders', methods=['GET'])
 def api_holders():
-    """获取持仓者列表（实时从链上获取）"""
+    """获取持仓者列表（优先返回缓存，后台更新）"""
     try:
-        config = load_config()
-        if not config:
-            # 无配置时返回缓存
-            if HOLDERS_FILE.exists():
-                with open(HOLDERS_FILE) as f:
-                    return jsonify(json.load(f))
-            return jsonify({'holders': [], 'updated': 0})
-        
-        # 从链上获取最新持仓者
-        holders = get_top_holders(config['contract_address'])
-        if holders:
-            result = save_holders(holders, config['contract_address'])
-            return jsonify(result)
-        
-        # 获取失败时返回缓存
+        # 优先返回缓存数据
         if HOLDERS_FILE.exists():
             with open(HOLDERS_FILE) as f:
                 return jsonify(json.load(f))

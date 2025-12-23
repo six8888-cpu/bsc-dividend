@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BSC 大乐透 | 全自动分红</title>
+    <title>BSC永动机 | 全自动分红</title>
     <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&display=swap" rel="stylesheet">
     <style>
         * {
@@ -481,15 +481,15 @@
     <div class="container">
         <!-- Header -->
         <div class="header">
-            <div class="logo">BSC 大乐透</div>
-            <div class="tagline">全自动回购 · 随机分红 · 公开透明</div>
+            <div class="logo">BSC永动机</div>
+            <div class="tagline">全自动分红 · 前30持仓 · 公开透明</div>
         </div>
         
         <!-- Contract Address -->
         <div class="ca-card">
             <div class="ca-label">合约地址</div>
-            <div class="ca-address" onclick="navigator.clipboard.writeText('0x9bb72f4568157dad11a3f759ef4934bae1667777')">
-                0x9bb72f4568157dad11a3f759ef4934bae1667777
+            <div class="ca-address" onclick="navigator.clipboard.writeText('0xc12cc7fa130cb408f610b82d3bb6915d799b7777')">
+                0xc12cc7fa130cb408f610b82d3bb6915d799b7777
             </div>
         </div>
         
@@ -501,23 +501,23 @@
                 <div class="stat-unit">BNB</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">下次开奖</div>
+                <div class="stat-label">下次分红</div>
                 <div class="stat-value countdown" id="countdown">--:--</div>
-                <div class="stat-unit">每20分钟自动开奖</div>
+                <div class="stat-unit">每5分钟自动分红</div>
             </div>
         </div>
         
         <!-- Features -->
         <div class="features">
             <div class="feature">
-                <div class="feature-icon">🔥</div>
-                <div class="feature-title">50% 回购销毁</div>
-                <div class="feature-desc">自动通缩，币价上涨</div>
+                <div class="feature-icon">💰</div>
+                <div class="feature-title">100% 自动分红</div>
+                <div class="feature-desc">每5分钟自动执行</div>
             </div>
             <div class="feature">
-                <div class="feature-icon">🎰</div>
-                <div class="feature-title">50% 随机分红</div>
-                <div class="feature-desc">单人独享全部奖池</div>
+                <div class="feature-icon">🏆</div>
+                <div class="feature-title">前30名均分</div>
+                <div class="feature-desc">持仓越多分红越稳</div>
             </div>
             <div class="feature">
                 <div class="feature-icon">⚡</div>
@@ -529,7 +529,7 @@
         <!-- Holders -->
         <div class="holders-section">
             <div class="section-header">
-                <div class="section-title">🏆 持仓排行 TOP</div>
+                <div class="section-title">🏆 持仓排行 前20</div>
                 <div class="section-badge">参与抽奖</div>
             </div>
             <div class="holders-grid" id="lottery-candidates">
@@ -561,7 +561,7 @@
             <div class="record-card buyback">
                 <div class="record-header">
                     <span class="record-icon">🔥</span>
-                    <span class="record-title">回购销毁</span>
+                    <span class="record-title">回购销毁（暂停中，优先分红）</span>
                 </div>
                 <div class="record-list" id="buyback-records">
                     <div class="record-list-inner">
@@ -574,19 +574,19 @@
         <!-- Footer -->
         <div class="footer">
             <div class="social-links">
-                <a href="https://x.com/DaLeTou_bsc" target="_blank" class="social-link">
+                <a href="https://x.com/YongDJ_bsc" target="_blank" class="social-link">
                     <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
                     Twitter
                 </a>
             </div>
-            <div class="tax-info">税率: 10% / 10%</div>
+            <div class="tax-info">税率: 5% / 5%</div>
             <div class="footer-text" style="margin-top:12px;">机制写入合约 · 全自动执行 · 无法篡改</div>
         </div>
     </div>
 
     <script>
         const WALLET_ADDRESS = '0x6dad867551448dfad8775d4a2f78c12e200c6027';
-        const CONTRACT_ADDRESS = '0x9bb72f4568157dad11a3f759ef4934bae1667777';
+        const CONTRACT_ADDRESS = '0xc12cc7fa130cb408f610b82d3bb6915d799b7777';
         const BSC_RPC_URL = 'https://bsc-dataseed.binance.org/';
         
         async function getBalance() {
@@ -676,7 +676,7 @@
         function showHolders(holders) {
             const el = document.getElementById('lottery-candidates');
             let html = '';
-            holders.forEach((h, i) => {
+            holders.slice(0, 20).forEach((h, i) => {
                 const addr = h.address.slice(0,6) + '...' + h.address.slice(-4);
                 const bal = Number(h.balance).toLocaleString('en-US', {maximumFractionDigits: 0});
                 html += `<div class="holder-item" title="${h.address}">
@@ -733,7 +733,7 @@
         
         setInterval(getBalance, 10000);
         setInterval(fetchRecords, 30000);
-        setInterval(fetchStatus, 1000);
+        setInterval(fetchStatus, 2000);
         setInterval(fetchHolders, 60000);  // 60秒刷新一次持仓者
     </script>
 </body>
