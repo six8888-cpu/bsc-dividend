@@ -140,7 +140,9 @@ def get_bnb_balance(address):
     return web3.from_wei(web3.eth.get_balance(address), 'ether')
 
 def get_top_holders(contract_address):
-    """获取代币前50持仓者地址"""
+    """获取代币前50持仓者地址（优化版：并发查询 + 超时控制）"""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    
     web3 = get_web3()
     BALANCE_OF = '0x70a08231'
     all_addresses = set()
@@ -151,7 +153,7 @@ def get_top_holders(contract_address):
         try:
             url = f"https://bscscan.com/token/generic-tokenholders2?a={contract_address}&s=0&p={page}"
             headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-            response = requests.get(url, headers=headers, timeout=15)
+            response = requests.get(url, headers=headers, timeout=10)
             if response.status_code == 200:
                 addresses = re.findall(r'0x[a-fA-F0-9]{40}', response.text)
                 for addr in addresses:
@@ -177,19 +179,38 @@ def get_top_holders(contract_address):
     if len(all_addresses) == 0:
         return []
     
-    holders = []
-    for addr in all_addresses:
+    # 限制查询数量，避免太多地址导致卡死
+    addresses_to_check = list(all_addresses)[:200]
+    print(f"  查询 {len(addresses_to_check)} 个地址的余额...")
+    
+    def check_balance(addr):
+        """查询单个地址余额（带超时）"""
         try:
+            w3 = get_web3()
             padded_addr = addr[2:].zfill(64)
             data = BALANCE_OF + padded_addr
-            result = web3.eth.call({'to': contract_checksum, 'data': data})
+            result = w3.eth.call({'to': contract_checksum, 'data': data})
             balance = int(result.hex(), 16)
             if balance >= 1000 * 10**18:
-                holders.append((web3.to_checksum_address(addr), balance))
+                return (w3.to_checksum_address(addr), balance)
         except:
             pass
+        return None
+    
+    # 并发查询（最多10个线程）
+    holders = []
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(check_balance, addr): addr for addr in addresses_to_check}
+        for future in as_completed(futures, timeout=60):  # 总超时60秒
+            try:
+                result = future.result(timeout=5)  # 单个超时5秒
+                if result:
+                    holders.append(result)
+            except:
+                pass
     
     holders.sort(key=lambda x: x[1], reverse=True)
+    print(f"  找到 {len(holders)} 个有效持仓者")
     return holders[:100]
 
 def save_holders(holders, contract_address):
