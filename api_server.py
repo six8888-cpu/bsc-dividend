@@ -583,7 +583,9 @@ def execute_lottery():
             update_progress(log='余额不足，跳过本轮')
             return None
         
-        dividend_amount = available  # 100%用于分红，不回购
+        # 50% 回购销毁，50% 分红
+        buyback_amount = available / 2
+        dividend_amount = available / 2
         
         state = load_state()
         # 初始化失败记录列表（如果不存在）
@@ -625,12 +627,37 @@ def execute_lottery():
             update_progress(log='错误: 无法获取持仓者')
             return None
         
+        # ========== 第一步：回购销毁 ==========
+        buyback_result = None
+        if buyback_amount >= 0.001:  # 最小回购金额
+            update_progress(
+                phase='buyback',
+                step='执行回购销毁...',
+                current=0,
+                total=2,
+                log=f'开始回购销毁: {buyback_amount:.6f} BNB'
+            )
+            logger.info(f"  执行回购销毁: {buyback_amount:.6f} BNB")
+            
+            buyback_result = buyback_and_burn(config, buyback_amount)
+            if buyback_result:
+                state['buyback'].insert(0, buyback_result)
+                state['buyback'] = state['buyback'][:50]
+                update_progress(current=2, log=f'✓ 回购销毁成功: {buyback_result["amount"]:,.0f} 枚代币')
+                logger.info(f"  回购销毁成功: {buyback_result['amount']:,.0f} 枚")
+            else:
+                update_progress(log='✗ 回购销毁失败')
+                logger.warning("  回购销毁失败")
+        
+        result['buyback'] = buyback_result
+        
+        # ========== 第二步：分红 ==========
         min_dividend = 0.001  # 最小分红金额，低于此不发送（节省gas）
         dividend_results = []
         failed_dividends = []
         total_sent = 0
         
-        # 前30名均分 100%
+        # 前30名均分
         top30 = holders[:30]
         if top30 and dividend_amount >= min_dividend:
             per_person = dividend_amount / len(top30)

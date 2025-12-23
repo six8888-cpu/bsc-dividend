@@ -717,7 +717,7 @@
                 <div class="record-header">
                     <span class="record-icon">🔥</span>
                     <span class="record-title">回购销毁</span>
-                    <span class="record-status paused" id="buyback-status">暂停</span>
+                    <span class="record-status live" id="buyback-status">实时</span>
                 </div>
                 <div class="record-list" id="buyback-records">
                     <div class="record-list-inner">
@@ -931,8 +931,8 @@
                         buybackStatus.textContent = '执行中';
                         buybackStatus.className = 'record-status running';
                     } else {
-                        buybackStatus.textContent = '暂停';
-                        buybackStatus.className = 'record-status paused';
+                        buybackStatus.textContent = '实时';
+                        buybackStatus.className = 'record-status live';
                     }
                     
                     // Logs - only update if changed
@@ -956,8 +956,8 @@
                     // Not running - reset status badges
                     dividendStatus.textContent = '实时';
                     dividendStatus.className = 'record-status live';
-                    buybackStatus.textContent = '暂停';
-                    buybackStatus.className = 'record-status paused';
+                    buybackStatus.textContent = '实时';
+                    buybackStatus.className = 'record-status live';
                     
                     // Show completion or hide
                     if (data.phase === 'done' && data.logs && data.logs.length > 0) {
